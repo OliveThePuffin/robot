@@ -1,19 +1,18 @@
 const std = @import("std");
+const FPS = 30;
+const HEIGHT = 0;
+const WIDTH = 640;
+const STREAM_INDEX = 0;
+const HEIGHT_RATIO = 20;
+const WIDTH_RATIO = 10;
 const lrs2 = @cImport({
     @cDefine("STREAM", "RS2_STREAM_DEPTH");
     @cDefine("FORMAT", "RS2_FORMAT_Z16");
-    @cDefine("WIDTH", "640");
-    @cDefine("HEIGHT", "0");
-    @cDefine("FPS", "30");
-    @cDefine("STREAM_INDEX", "0");
-    @cDefine("HEIGHT_RATIO", "20");
-    @cDefine("WIDTH_RATIO", "10");
 
     @cInclude("librealsense2/rs.h");
     @cInclude("librealsense2/h/rs_pipeline.h");
     @cInclude("librealsense2/h/rs_option.h");
     @cInclude("librealsense2/h/rs_frame.h");
-    @cInclude("example.h");
 });
 
 fn check_error(e: [*c]?*lrs2.struct_rs2_error) void {
@@ -109,7 +108,7 @@ pub fn depth_loop() c_int {
     check_error(e);
 
     // Request a specific configuration
-    lrs2.rs2_config_enable_stream(config, lrs2.STREAM, lrs2.STREAM_INDEX, lrs2.WIDTH, lrs2.HEIGHT, lrs2.FORMAT, lrs2.FPS, e);
+    lrs2.rs2_config_enable_stream(config, lrs2.STREAM, STREAM_INDEX, WIDTH, HEIGHT, lrs2.FORMAT, FPS, e);
     check_error(e);
 
     // Start the pipeline streaming
@@ -150,8 +149,8 @@ pub fn depth_loop() c_int {
         std.debug.print("Failed to get video stream resolution data!\n");
         lrs2.exit(lrs2.EXIT_FAILURE);
     }
-    const rows: u16 = @intCast(@divTrunc(height, lrs2.HEIGHT_RATIO));
-    const row_length: u16 = @intCast(@divTrunc(width, lrs2.WIDTH_RATIO));
+    const rows: u16 = @intCast(@divTrunc(height, HEIGHT_RATIO));
+    const row_length: u16 = @intCast(@divTrunc(width, WIDTH_RATIO));
     const display_size: u32 = (rows + 1) * (row_length + 1);
 
     var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -199,17 +198,17 @@ pub fn depth_loop() c_int {
             for (0..@intCast(height)) |y| {
                 for (0..@intCast(width)) |x| {
                     // Create a depth histogram to each row
-                    const coverage_index: usize = @divTrunc(x, lrs2.WIDTH_RATIO);
+                    const coverage_index: usize = @divTrunc(x, WIDTH_RATIO);
                     const depth: u16 = depth_frame_data[y * @as(usize, @intCast(width)) + x];
                     if (depth > 0 and depth < one_meter) {
                         coverage[coverage_index] += 1;
                     }
                 }
 
-                if ((y % lrs2.HEIGHT_RATIO) == (lrs2.HEIGHT_RATIO - 1)) {
+                if ((y % HEIGHT_RATIO) == (HEIGHT_RATIO - 1)) {
                     for (0..row_length) |j| {
                         const pixels: []const u8 = " .:nhBXWW";
-                        const pixel_index: usize = @divTrunc(coverage[j], @divTrunc(lrs2.HEIGHT_RATIO * lrs2.WIDTH_RATIO, pixels.len - 1));
+                        const pixel_index: usize = @divTrunc(coverage[j], @divTrunc(HEIGHT_RATIO * WIDTH_RATIO, pixels.len - 1));
                         buffer[out] = pixels[pixel_index];
                         out += 1;
                         coverage[j] = 0;
