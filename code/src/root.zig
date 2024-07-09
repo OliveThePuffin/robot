@@ -1,11 +1,19 @@
 const std = @import("std");
-const testing = std.testing;
 
-export fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+// utils
+const gateway = @import("utils/gateway.zig");
+const logger = @import("utils/logger.zig");
 
-// TODO: add all unit tests. Apparently this doesn't work
+// modules
+const modules = @import("modules/module.zig");
+const slam = @import("modules/slam/slam.zig");
+
 test {
-    std.testing.refAllDecls(@This());
+    // utils
+    _ = gateway;
+    _ = logger;
+
+    // modules
+    _ = modules;
+    _ = slam;
 }

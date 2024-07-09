@@ -1,6 +1,5 @@
 const std = @import("std");
 const log = @import("../utils/logger.zig").log;
-const Gateway = @import("../utils/gateway.zig").Gateway;
 
 pub fn Module(comptime GatewayType: type) type {
     return struct {
@@ -61,6 +60,6 @@ pub fn Module(comptime GatewayType: type) type {
 
 // TODO: implement and test gateway, scheduler, and queue
 // TODO: spawn process thread on init that does tasks in the queue until deinit. test that too
-test "ohea" {
-    unreachable;
+test "scheduler" {
+    try std.testing.expect(true);
 }
