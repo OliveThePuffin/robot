@@ -20,13 +20,13 @@ pub fn Module(comptime GatewayType: type, comptime TaskQueueType: type) type {
         // Gateway maps enums to functions with args
         gateway: GatewayType,
 
-        task_queue: TaskQueue = undefined,
+        task_queue: ?TaskQueue = null,
         semaphore: std.Thread.Semaphore = .{ .permits = 0 },
         queue_mutex: std.Thread.Mutex = .{},
         consumer_thread: std.Thread = undefined,
 
         pub fn init(name: []const u8, gateway: GatewayType, task_queue: TaskQueue, allocator: std.mem.Allocator) !*Self {
-            log(.INFO, name, "Initializing module", .{});
+            log(.INFO, name, "Initializing...", .{});
             const module = try allocator.create(Self);
             module.* = Self{
                 .name = name,
@@ -39,33 +39,41 @@ pub fn Module(comptime GatewayType: type, comptime TaskQueueType: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            log(.INFO, self.name, "Deinitializing module", .{});
-            self.task_queue.deinit();
+            log(.INFO, self.name, "Deinitializing...", .{});
+            self.consumer_thread.detach();
+            self.queue_mutex.lock();
+            self.task_queue.?.deinit();
+            self.queue_mutex.unlock();
             self.allocator.destroy(self);
-            // TODO: kill consumer thread
         }
 
         /// Send a message
         pub fn send(self: *Self, topic: GatewayType.TopicEnum, message: GatewayType.MessageType) !void {
-            const task = self.gateway.taskize(topic, message);
             self.queue_mutex.lock();
-            try self.task_queue.add(task);
-            self.queue_mutex.unlock();
-            self.semaphore.post();
-            log(.DEBUG, self.name, "Module send {} {any}", .{ topic, message });
+            if (self.task_queue) |*task_queue| {
+                const task = self.gateway.taskize(topic, message);
+                try task_queue.add(task);
+                self.queue_mutex.unlock();
+                self.semaphore.post();
+                log(.DEBUG, self.name, "Send\n\tTopic: {}\n\tMsg: {any}", .{ topic, message });
+            } else {
+                self.queue_mutex.unlock();
+                log(.WARN, self.name, "No task queue", .{});
+                return;
+            }
         }
 
         fn loop(self: *Self) !void {
-            log(.DEBUG, self.name, "Module {s} thread started", .{self.name});
-            while (true) {
+            log(.DEBUG, self.name, "Worker thread started", .{});
+            while (self.task_queue) |*task_queue| {
                 self.semaphore.wait();
                 self.queue_mutex.lock();
-                const task = self.task_queue.remove();
+                const task = task_queue.remove();
                 self.queue_mutex.unlock();
-                log(.DEBUG, self.name, "Executing Job {any}", .{task});
+                log(.DEBUG, self.name, "Executing Job: {any}\n\targ: {any}", .{ task.job, task.args });
                 task.job(task.args);
             }
-            log(.DEBUG, self.name, "Module {s} thread stopped", .{self.name});
+            log(.DEBUG, self.name, "Worker thread stopped", .{});
         }
     };
 }

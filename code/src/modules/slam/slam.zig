@@ -5,7 +5,7 @@ const Gateway = @import("../gateway.zig").Gateway;
 
 pub const Slam = struct {
     const Self = @This();
-    const SlamModule = Module(SlamGateway);
+    const SlamModule = Module(SlamGateway, SlamTaskQueue);
     const SlamGateway = Gateway(RequestEnum, void);
     const SlamTaskQueue = std.PriorityQueue(SlamGateway.Task, void, greaterThan);
 
@@ -27,7 +27,7 @@ pub const Slam = struct {
         return std.math.order(b.priority, a.priority);
     }
 
-    pub fn init(name: []const u8, allocator: std.mem.Allocator) !SlamModule {
+    pub fn init(name: []const u8, allocator: std.mem.Allocator) !*SlamModule {
         var gateway = SlamGateway{};
         gateway.registerMessageHandler(.START, Self.start, 1);
         gateway.registerMessageHandler(.STOP, Self.stop, 0);
