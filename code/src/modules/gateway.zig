@@ -1,11 +1,13 @@
 const std = @import("std");
 
 /// Gateway handles messages between modules.
-pub fn Gateway(comptime TopicEnum: type, comptime MessageType: type) type {
-    std.debug.assert(@typeInfo(TopicEnum) == .Enum);
+pub fn Gateway(comptime TopicEnumCT: type, comptime MessageTypeCT: type) type {
+    std.debug.assert(@typeInfo(TopicEnumCT) == .Enum);
     return struct {
         const Self = @This();
         const Handler = *const fn (MessageType) void;
+        pub const TopicEnum = TopicEnumCT;
+        pub const MessageType = MessageTypeCT;
         const TopicCount = @typeInfo(TopicEnum).Enum.fields.len;
         pub const Task = struct {
             job: Handler,
@@ -24,12 +26,6 @@ pub fn Gateway(comptime TopicEnum: type, comptime MessageType: type) type {
                 .priority = self.priority_list[@intFromEnum(topic)],
             };
         }
-
-        /// Send a message
-        //pub fn send(self: *Self, topic: TopicEnum, message: MessageType) void {
-        //    const handler = self.handler_list[@intFromEnum(topic)];
-        //    handler(message);
-        //}
 
         /// Register a message handler to one or more topics
         /// Overwrites any previously registered handler.

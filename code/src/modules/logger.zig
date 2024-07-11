@@ -7,6 +7,8 @@ const LogLevelEnum = enum {
     ERROR,
 };
 
+var log_mutex = std.Thread.Mutex{};
+
 // stderr
 const stderr_file = std.io.getStdErr().writer();
 var err_bw = std.io.bufferedWriter(stderr_file);
@@ -18,6 +20,8 @@ var out_bw = std.io.bufferedWriter(stdout_file);
 const stdout = out_bw.writer();
 
 pub fn log(level: LogLevelEnum, channel: []const u8, comptime fmt: []const u8, args: anytype) void {
+    log_mutex.lock();
+    defer log_mutex.unlock();
     const color = switch (level) {
         .DEBUG => "\x1b[34m",
         .INFO => "\x1b[32m",
@@ -40,4 +44,8 @@ pub fn log(level: LogLevelEnum, channel: []const u8, comptime fmt: []const u8, a
             out_bw.flush() catch return;
         },
     }
+}
+
+test "logger" {
+    log(.INFO, "test", "hello {s}", .{"world"});
 }
