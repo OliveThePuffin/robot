@@ -11,7 +11,7 @@ pub fn main() !void {
 
     std.time.sleep(0.5 * std.time.ns_per_s);
     try module_slam.send(Slam.RequestEnum.START, void{});
-    std.time.sleep(0.5 * std.time.ns_per_s);
+    std.time.sleep(2 * std.time.ns_per_s);
     try module_slam.send(Slam.RequestEnum.STOP, void{});
     std.time.sleep(0.5 * std.time.ns_per_s);
 

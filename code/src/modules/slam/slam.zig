@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("../logger.zig").log;
+const rs_depth = @import("rs-depth.zig");
 const Module = @import("../module.zig").Module;
 const Gateway = @import("../gateway.zig").Gateway;
 
@@ -16,10 +17,12 @@ pub const Slam = struct {
 
     fn start(_: void) void {
         log(.INFO, "Slam", "Starting", .{});
+        rs_depth.start_loop();
     }
 
     fn stop(_: void) void {
         log(.INFO, "Slam", "Stopping", .{});
+        rs_depth.stop_loop();
     }
 
     fn greaterThan(context: void, a: SlamGateway.Task, b: SlamGateway.Task) std.math.Order {
@@ -31,10 +34,8 @@ pub const Slam = struct {
         var gateway = SlamGateway{};
         gateway.registerMessageHandler(.START, Self.start, 1);
         gateway.registerMessageHandler(.STOP, Self.stop, 0);
-
         return SlamModule.init(name, gateway, SlamTaskQueue.init(allocator, {}), allocator);
     }
 
-    // TODO: make this module do the realsense camera stuff in the start and stop functions
     // TODO: also try adding a kalman filter here
 };

@@ -33,7 +33,7 @@ pub fn Module(comptime GatewayType: type, comptime TaskQueueType: type) type {
                 .allocator = allocator,
                 .gateway = gateway,
                 .task_queue = task_queue,
-                .consumer_thread = try std.Thread.spawn(.{}, Self.loop, .{module}),
+                .consumer_thread = try std.Thread.spawn(.{}, Self.consume_loop, .{module}),
             };
             return module;
         }
@@ -63,7 +63,7 @@ pub fn Module(comptime GatewayType: type, comptime TaskQueueType: type) type {
             }
         }
 
-        fn loop(self: *Self) !void {
+        fn consume_loop(self: *Self) !void {
             log(.DEBUG, self.name, "Worker thread started", .{});
             while (self.task_queue) |*task_queue| {
                 self.semaphore.wait();
@@ -121,20 +121,20 @@ test "module" {
             const allocator = std.heap.page_allocator;
             return try TestModule.init(name, gateway, TestTaskQueue.init(allocator, {}), allocator);
         }
+        var x: u32 = 0;
     };
 
-    var x: u32 = 0;
     var module_test = try Test.init("test");
 
     // Test sending
     std.time.sleep(0.1 * std.time.ns_per_s);
-    try module_test.send(Test.RequestEnum.ADD, .{ .a = 5, .b = 3, .r = &x });
+    try module_test.send(Test.RequestEnum.ADD, .{ .a = 5, .b = 3, .r = &Test.x });
     std.time.sleep(0.1 * std.time.ns_per_s);
-    try std.testing.expect(x == 8);
+    try std.testing.expect(Test.x == 8);
     std.time.sleep(0.1 * std.time.ns_per_s);
-    try module_test.send(Test.RequestEnum.SUB, .{ .a = 5, .b = 3, .r = &x });
+    try module_test.send(Test.RequestEnum.SUB, .{ .a = 5, .b = 3, .r = &Test.x });
     std.time.sleep(0.1 * std.time.ns_per_s);
-    try std.testing.expect(x == 2);
+    try std.testing.expect(Test.x == 2);
     std.time.sleep(0.1 * std.time.ns_per_s);
 
     // Deinitialize modules

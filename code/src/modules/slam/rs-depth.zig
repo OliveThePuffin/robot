@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = @import("../logger.zig").log;
 const FPS = 30;
 const HEIGHT = 0;
 const WIDTH = 640;
@@ -14,6 +15,14 @@ const lrs2 = @cImport({
     @cInclude("librealsense2/h/rs_option.h");
     @cInclude("librealsense2/h/rs_frame.h");
 });
+
+const RealsenseError = error{
+    NoDevice,
+};
+
+var loop_continue = false;
+var loop_thread: ?std.Thread = null;
+var loop_mutex: std.Thread.Mutex = .{};
 
 fn check_error(e: [*c]?*lrs2.struct_rs2_error) void {
     if (e) |err| {
@@ -67,7 +76,32 @@ fn get_depth_unit_value(dev: *const lrs2.struct_rs2_device) f32 {
     return depth_scale;
 }
 
-pub fn depth_loop() c_int {
+pub fn start_loop() void {
+    loop_mutex.lock();
+    defer loop_mutex.unlock();
+
+    if (loop_thread) |_| {
+        log(.WARN, "RealSense", "Loop already running...", .{});
+    } else {
+        loop_continue = true;
+        loop_thread = std.Thread.spawn(.{}, depth_loop, .{}) catch unreachable;
+    }
+}
+
+pub fn stop_loop() void {
+    loop_mutex.lock();
+    defer loop_mutex.unlock();
+
+    if (loop_thread) |*thread| {
+        loop_continue = false;
+        thread.join();
+        loop_thread = null;
+    } else {
+        log(.WARN, "RealSense", "Loop not running...", .{});
+    }
+}
+
+fn depth_loop() RealsenseError!void {
     const e: [*c]?*lrs2.struct_rs2_error = 0;
 
     // Create a context object. This object owns the handles to all connected realsense devices.
@@ -85,11 +119,11 @@ pub fn depth_loop() c_int {
 
     std.debug.print("There are {d} connected RealSense devices.\n", .{dev_count});
     if (0 == dev_count)
-        return lrs2.EXIT_FAILURE;
+        return RealsenseError.NoDevice;
 
     // Get the first connected device
     // The returned object should be released with rs2_delete_device(...)
-    const dev = if (lrs2.rs2_create_device(device_list, 0, e)) |d| d else return lrs2.EXIT_FAILURE;
+    const dev = if (lrs2.rs2_create_device(device_list, 0, e)) |d| d else return RealsenseError.NoDevice;
     check_error(e);
 
     print_device_info(dev);
@@ -156,13 +190,13 @@ pub fn depth_loop() c_int {
     var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer aa.deinit();
-    defer gpa.deinit();
+    defer _ = gpa.deinit();
 
     const buffer: []u8 = aa.allocator().alloc(u8, display_size) catch unreachable;
     @memset(buffer, 0);
     var out: usize = undefined;
 
-    while (true) {
+    while (loop_continue) {
         // This call waits until a new composite_frame is available
         // composite_frame holds a set of frames. It is used to prevent frame drops
         // The returned object should be released with rs2_release_frame(...)
@@ -239,6 +273,4 @@ pub fn depth_loop() c_int {
     lrs2.rs2_delete_device(dev);
     lrs2.rs2_delete_device_list(device_list);
     lrs2.rs2_delete_context(ctx);
-
-    return lrs2.EXIT_SUCCESS;
 }
