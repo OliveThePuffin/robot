@@ -1,20 +1,22 @@
 const std = @import("std");
 const log = @import("../logger.zig").log;
-const FPS = 30;
-const HEIGHT = 0;
-const WIDTH = 640;
-const STREAM_INDEX = 0;
-const HEIGHT_RATIO = 20;
-const WIDTH_RATIO = 10;
 const lrs2 = @cImport({
-    @cDefine("STREAM", "RS2_STREAM_DEPTH");
-    @cDefine("FORMAT", "RS2_FORMAT_Z16");
-
     @cInclude("librealsense2/rs.h");
     @cInclude("librealsense2/h/rs_pipeline.h");
-    @cInclude("librealsense2/h/rs_option.h");
-    @cInclude("librealsense2/h/rs_frame.h");
 });
+
+pub const rs_module_config = struct {
+    dry_run: bool = false,
+    fps: u32 = 30,
+    width: u32 = 640,
+    height: u32 = 0,
+    width_ratio: u32 = 10,
+    height_ratio: u32 = 20,
+
+    stream_index: usize = 0,
+    stream: lrs2.enum_rs2_stream = lrs2.RS2_STREAM_DEPTH,
+    format: lrs2.enum_rs2_format = lrs2.RS2_FORMAT_Z16,
+};
 
 const RealsenseError = error{
     NoDevice,
@@ -23,10 +25,14 @@ const RealsenseError = error{
 var loop_continue = false;
 var loop_thread: ?std.Thread = null;
 var loop_mutex: std.Thread.Mutex = .{};
+pub var module_config: rs_module_config = .{};
 
 fn check_error(e: [*c]?*lrs2.struct_rs2_error) void {
     if (e) |err| {
-        std.debug.print("rs_error was raised when calling {s}({s}):\n", .{ lrs2.rs2_get_failed_function(err.?.*), lrs2.rs2_get_failed_args(err.?.*) });
+        std.debug.print(
+            "rs_error was raised when calling {s}({s}):\n",
+            .{ lrs2.rs2_get_failed_function(err.?.*), lrs2.rs2_get_failed_args(err.?.*) },
+        );
         std.debug.print("    {s}\n", .{lrs2.rs2_get_error_message(err.?.*)});
         lrs2.exit(lrs2.EXIT_FAILURE);
     }
@@ -34,11 +40,20 @@ fn check_error(e: [*c]?*lrs2.struct_rs2_error) void {
 
 fn print_device_info(dev: *const lrs2.struct_rs2_device) void {
     const e: [*c]?*lrs2.struct_rs2_error = 0;
-    std.debug.print("\nUsing device 0, an {s}\n", .{lrs2.rs2_get_device_info(dev, lrs2.RS2_CAMERA_INFO_NAME, e)});
+    std.debug.print(
+        "\nUsing device 0, an {s}\n",
+        .{lrs2.rs2_get_device_info(dev, lrs2.RS2_CAMERA_INFO_NAME, e)},
+    );
     check_error(e);
-    std.debug.print("    Serial number: {s}\n", .{lrs2.rs2_get_device_info(dev, lrs2.RS2_CAMERA_INFO_SERIAL_NUMBER, e)});
+    std.debug.print(
+        "    Serial number: {s}\n",
+        .{lrs2.rs2_get_device_info(dev, lrs2.RS2_CAMERA_INFO_SERIAL_NUMBER, e)},
+    );
     check_error(e);
-    std.debug.print("    Firmware version: {s}\n\n", .{lrs2.rs2_get_device_info(dev, lrs2.RS2_CAMERA_INFO_FIRMWARE_VERSION, e)});
+    std.debug.print(
+        "    Firmware version: {s}\n\n",
+        .{lrs2.rs2_get_device_info(dev, lrs2.RS2_CAMERA_INFO_FIRMWARE_VERSION, e)},
+    );
     check_error(e);
 }
 
@@ -102,6 +117,11 @@ pub fn stop_loop() void {
 }
 
 fn depth_loop() RealsenseError!void {
+    if (module_config.dry_run) {
+        log(.WARN, "RealSense", "Dry run mode enabled. Skipping Depth Loop", .{});
+        return;
+    }
+
     const e: [*c]?*lrs2.struct_rs2_error = 0;
 
     // Create a context object. This object owns the handles to all connected realsense devices.
@@ -142,7 +162,16 @@ fn depth_loop() RealsenseError!void {
     check_error(e);
 
     // Request a specific configuration
-    lrs2.rs2_config_enable_stream(config, lrs2.STREAM, STREAM_INDEX, WIDTH, HEIGHT, lrs2.FORMAT, FPS, e);
+    lrs2.rs2_config_enable_stream(
+        config,
+        module_config.stream,
+        @intCast(module_config.stream_index),
+        @intCast(module_config.width),
+        @intCast(module_config.height),
+        module_config.format,
+        @intCast(module_config.fps),
+        e,
+    );
     check_error(e);
 
     // Start the pipeline streaming
@@ -183,8 +212,8 @@ fn depth_loop() RealsenseError!void {
         std.debug.print("Failed to get video stream resolution data!\n");
         lrs2.exit(lrs2.EXIT_FAILURE);
     }
-    const rows: u16 = @intCast(@divTrunc(height, HEIGHT_RATIO));
-    const row_length: u16 = @intCast(@divTrunc(width, WIDTH_RATIO));
+    const rows: u16 = @intCast(@divTrunc(@as(u32, @intCast(height)), module_config.height_ratio));
+    const row_length: u16 = @intCast(@divTrunc(@as(u32, @intCast(width)), module_config.width_ratio));
     const display_size: u32 = (rows + 1) * (row_length + 1);
 
     var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -223,7 +252,8 @@ fn depth_loop() RealsenseError!void {
             const depth_frame_data: [*]const u16 = @ptrCast(@alignCast(lrs2.rs2_get_frame_data(frame, e)));
             check_error(e);
 
-            // Print a simple text-based representation of the image, by breaking it into 10x5 pixel regions and approximating the coverage of pixels within one meter
+            // Print a simple text-based representation of the image
+            // by breaking it into 10x5 pixel regions and approximating the coverage of pixels within one meter
             out = 0;
             const coverage: []usize = gpa.allocator().alloc(usize, row_length) catch unreachable;
             defer gpa.allocator().free(coverage);
@@ -232,17 +262,21 @@ fn depth_loop() RealsenseError!void {
             for (0..@intCast(height)) |y| {
                 for (0..@intCast(width)) |x| {
                     // Create a depth histogram to each row
-                    const coverage_index: usize = @divTrunc(x, WIDTH_RATIO);
+                    const coverage_index: usize = @min(row_length - 1, @divTrunc(x, module_config.width_ratio));
                     const depth: u16 = depth_frame_data[y * @as(usize, @intCast(width)) + x];
                     if (depth > 0 and depth < one_meter) {
                         coverage[coverage_index] += 1;
                     }
                 }
 
-                if ((y % HEIGHT_RATIO) == (HEIGHT_RATIO - 1)) {
+                if ((y % module_config.height_ratio) == (module_config.height_ratio - 1)) {
                     for (0..row_length) |j| {
                         const pixels: []const u8 = " .:nhBXWW";
-                        const pixel_index: usize = @divTrunc(coverage[j], @divTrunc(HEIGHT_RATIO * WIDTH_RATIO, pixels.len - 1));
+                        //const pixels: []const u8 = " ░▒▓█";
+                        const pixel_index: usize = @min(pixels.len - 1, @divTrunc(
+                            coverage[j],
+                            @divTrunc(module_config.height_ratio * module_config.width_ratio, pixels.len - 1),
+                        ));
                         buffer[out] = pixels[pixel_index];
                         out += 1;
                         coverage[j] = 0;

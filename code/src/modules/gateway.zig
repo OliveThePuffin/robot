@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = @import("logger.zig").log;
 
 /// Gateway handles messages between modules.
 pub fn Gateway(comptime TopicEnumCT: type, comptime MessageTypeCT: type) type {
@@ -20,11 +21,17 @@ pub fn Gateway(comptime TopicEnumCT: type, comptime MessageTypeCT: type) type {
 
         /// Returns a task list that must be executed and freed
         pub fn taskize(self: *Self, topic: TopicEnum, message: MessageType) Task {
-            return Task{
+            const task = Task{
                 .job = self.handler_list[@intFromEnum(topic)],
                 .args = message,
                 .priority = self.priority_list[@intFromEnum(topic)],
             };
+            return task;
+        }
+
+        pub fn execute(task: Task) void {
+            log(.DEBUG, "Gateway", "Executing Job: {any}\n\targ: {any}", .{ task.job, task.args });
+            return task.job(task.args);
         }
 
         /// Register a message handler to one or more topics

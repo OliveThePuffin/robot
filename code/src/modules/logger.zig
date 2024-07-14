@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const LogLevelEnum = enum {
+pub const Level = enum {
     DEBUG,
     INFO,
     WARN,
@@ -19,7 +19,7 @@ const stdout_file = std.io.getStdOut().writer();
 var out_bw = std.io.bufferedWriter(stdout_file);
 const stdout = out_bw.writer();
 
-pub fn log(level: LogLevelEnum, channel: []const u8, comptime fmt: []const u8, args: anytype) void {
+pub fn log(level: Level, channel: []const u8, comptime fmt: []const u8, args: anytype) void {
     log_mutex.lock();
     defer log_mutex.unlock();
     const color = switch (level) {

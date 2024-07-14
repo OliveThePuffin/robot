@@ -3,10 +3,10 @@ const std = @import("std");
 // module utils
 const gateway = @import("modules/gateway.zig");
 const logger = @import("modules/logger.zig");
-const modules = @import("modules/module.zig");
+const modules = @import("modules/Module.zig");
 
 // modules
-const slam = @import("modules/slam/slam.zig");
+const slam = @import("modules/slam/Slam.zig");
 
 test {
     // utils
