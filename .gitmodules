@@ -1,9 +1,3 @@
-[submodule "slam/related_work/code/FAST_LIO"]
-	path = slam/related_work/code/FAST_LIO
-	url = github:hku-mars/FAST_ILO.git
-[submodule "slam/related_work/code/r2live"]
-	path = slam/related_work/code/r2live
-	url = github:hku-mars/r2live.git
-[submodule "slam/related_work/code/pcl"]
-	path = slam/related_work/code/pcl
-	url = github:PointCloudLibrary/pcl.git
+[submodule "code/zig-opencl"]
+	path = zig-opencl
+	url = https://github.com/kython28/zig-opencl
