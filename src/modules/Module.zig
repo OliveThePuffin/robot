@@ -46,7 +46,7 @@ pub fn send(self: *Module, topic: anytype, message: anytype) !void {
     }
 }
 
-fn consume_loop(self: *Module) !void {
+fn consumeLoop(self: *Module) !void {
     log(.DEBUG, self.name, "Consumer loop started", .{});
     while (self.core.task_queue) |task_queue| {
         self.thread_state.semaphore.wait();
@@ -59,7 +59,7 @@ fn consume_loop(self: *Module) !void {
 }
 
 pub fn startConsumer(self: *Module) !void {
-    self.thread_state.consumer_thread = try std.Thread.spawn(.{}, consume_loop, .{self});
+    self.thread_state.consumer_thread = try std.Thread.spawn(.{}, consumeLoop, .{self});
 }
 
 pub fn init(name: []const u8, allocator: std.mem.Allocator, core: Core) !*Module {
@@ -83,6 +83,8 @@ pub fn deinit(self: *Module) void {
 }
 
 test "module" {
+    const logLevelSet = @import("logger.zig").logLevelSet;
+    logLevelSet(.NONE);
     var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const Test = struct {
         const Self = @This();

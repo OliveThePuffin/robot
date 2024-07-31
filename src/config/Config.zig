@@ -29,7 +29,7 @@ pub const default = Config{
 };
 
 pub const dry_run = Config{
-    .log_level = .INFO,
+    .log_level = .DEBUG,
     .modules = &[_]ModuleConfig{
         ModuleConfig{ .slam = .{
             .name = "SLAM",

@@ -1,7 +1,7 @@
 const Config = @import("config/Config.zig");
 const Module = @import("modules/Module.zig");
 const Slam = @import("modules/slam/Slam.zig");
-const log = @import("modules/logger.zig").log;
+const logger = @import("modules/logger.zig");
 const std = @import("std");
 
 //const rs_depth = @import("rs-depth.zig");
@@ -11,6 +11,7 @@ pub fn main() !void {
 
     // Read config and initialize modules
     const config = Config.dry_run;
+    logger.logLevelSet(config.log_level);
 
     var modules: [config.modules.len]?*Module = [_]?*Module{null} ** config.modules.len;
 
@@ -34,6 +35,6 @@ pub fn main() !void {
     }
 
     if (gpa.deinit() == .leak) {
-        log(.ERROR, "Main", "Memory leaks detected", .{});
+        logger.log(.ERROR, "Main", "Memory leaks detected", .{});
     }
 }
