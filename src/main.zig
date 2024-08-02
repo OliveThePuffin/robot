@@ -1,40 +1,30 @@
 const Config = @import("config/Config.zig");
-const Module = @import("modules/Module.zig");
-const Slam = @import("modules/slam/Slam.zig");
-const logger = @import("modules/logger.zig");
+const Slam = @import("Slam");
+const logger = @import("logger");
 const std = @import("std");
 
 //const rs_depth = @import("rs-depth.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
-    // Read config and initialize modules
+    // Read config
     const config = Config.dry_run;
     logger.logLevelSet(config.log_level);
 
-    var modules: [config.modules.len]?*Module = [_]?*Module{null} ** config.modules.len;
-
-    for (config.modules, 0..) |module, i| {
-        modules[i] = switch (module) {
-            .slam => |s| s.module_init(s.name, gpa.allocator(), s.config),
-        };
+    // Initialize modules
+    try Slam.init(config.slam);
+    defer {
+        // Deinitialize modules
+        Slam.deinit();
     }
 
-    std.time.sleep(0.5 * std.time.ns_per_s);
-    try modules[0].?.send(Slam.Request.START, &void{});
-    std.time.sleep(2 * std.time.ns_per_s);
-    try modules[0].?.send(Slam.Request.STOP, &void{});
-    std.time.sleep(0.5 * std.time.ns_per_s);
+    // Start modules
+    Slam.start();
+    std.time.sleep(0.25 * std.time.ns_per_s);
+    Slam.stop();
+}
 
-    // Deinitialize modules
-    for (modules) |module| {
-        if (module) |m| {
-            m.deinit();
-        }
-    }
-
-    if (gpa.deinit() == .leak) {
-        logger.log(.ERROR, "Main", "Memory leaks detected", .{});
-    }
+test {
+    _ = logger;
+    _ = Slam;
 }

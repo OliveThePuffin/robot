@@ -1,19 +1,17 @@
 const std = @import("std");
 
 // module utils
-const gateway = @import("modules/gateway.zig");
-const logger = @import("modules/logger.zig");
-const modules = @import("modules/Module.zig");
+const logger = @import("logger");
 
 // modules
-const slam = @import("modules/slam/Slam.zig");
+const Slam = @import("Slam");
+const OpenCL = @import("OpenCL");
 
 test {
     // utils
-    _ = gateway;
     _ = logger;
 
     // modules
-    _ = modules;
-    _ = slam;
+    _ = Slam;
+    _ = OpenCL;
 }

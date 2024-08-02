@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = @import("../logger.zig").log;
+const log = @import("logger").log;
 const lrs2 = @cImport({
     @cInclude("librealsense2/rs.h");
     @cInclude("librealsense2/h/rs_pipeline.h");

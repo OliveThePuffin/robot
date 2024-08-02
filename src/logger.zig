@@ -1,11 +1,11 @@
 const std = @import("std");
 
 pub const Level = enum(u8) {
-    NONE,
     DEBUG,
     INFO,
     WARN,
     ERROR,
+    NONE,
 };
 
 var log_mutex = std.Thread.Mutex{};
@@ -30,17 +30,17 @@ pub fn log(level: Level, channel: []const u8, comptime fmt: []const u8, args: an
     log_mutex.lock();
     defer log_mutex.unlock();
     const color = switch (level) {
-        .NONE => unreachable,
         .DEBUG => "\x1b[34m",
         .INFO => "\x1b[32m",
         .WARN => "\x1b[33m",
         .ERROR => "\x1b[31m",
+        .NONE => unreachable,
     };
     const fmt_prefix = "{s}{s}: {s}: ";
     const fmt_rst = fmt ++ "\x1b[0m\n";
 
     //const log_message = color ++ @tagName(level) ++ ": " ++ channel ++ ": " ++ fmt ++ "\x1b[0m\n";
-    if (@intFromEnum(level) >= @intFromEnum(log_level) and log_level != .NONE) {
+    if (@intFromEnum(level) >= @intFromEnum(log_level)) {
         switch (level) {
             .ERROR => {
                 stderr.print(fmt_prefix, .{ color, @tagName(level), channel }) catch return;

@@ -15,39 +15,49 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "code",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
+    // Modules
     const cl_module = b.dependency("zig-opencl", .{ .target = target, .optimize = optimize }).module("opencl");
+    const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
+    const module_slam = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/Slam.zig") });
+    const module_opencl = b.addModule("OpenCL", .{ .root_source_file = b.path("src/opencl/OpenCL.zig") });
+    const module_log = b.addModule("logger", .{ .root_source_file = b.path("src/logger.zig") });
+    module_opencl.addImport("opencl", cl_module);
+    module_opencl.addImport("logger", module_log);
+    module_slam.addImport("OpenCL", module_opencl);
+    module_slam.addImport("logger", module_log);
+
+    //const lib = b.addStaticLibrary(.{
+    //    .name = "robot",
+    //    // In this case the main source file is merely a path, however, in more
+    //    // complicated build scripts, this could be a generated file.
+    //    .root_source_file = b.path("src/root.zig"),
+    //    .target = target,
+    //    .optimize = optimize,
+    //});
+    //lib.root_module.addImport("logger", module_log);
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
-    b.installArtifact(lib);
+    //b.installArtifact(lib);
 
     const exe = b.addExecutable(.{
-        .name = "code",
+        .name = "robot",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("opencl", cl_module);
+    exe.root_module.addImport("Config", module_config);
+    exe.root_module.addImport("Slam", module_slam);
+    exe.root_module.addImport("OpenCL", module_opencl);
+    exe.root_module.addImport("logger", module_log);
     exe.linkLibC();
     exe.linkSystemLibrary("c");
     exe.linkSystemLibrary("realsense2");
+
     exe.addIncludePath(.{ .src_path = .{
         .owner = b,
         .sub_path = "/usr/local/include",
-    } });
-    exe.addIncludePath(.{ .src_path = .{
-        .owner = b,
-        .sub_path = "src",
     } });
 
     // This declares intent for the executable to be installed into the
@@ -80,19 +90,23 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    //const lib_unit_tests = b.addTest(.{
+    //    .root_source_file = b.path("src/root.zig"),
+    //    .target = target,
+    //    .optimize = optimize,
+    //});
 
-    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+    //const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     const exe_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    exe_unit_tests.root_module.addImport("logger", module_log);
+    exe_unit_tests.root_module.addImport("Config", module_config);
+    exe_unit_tests.root_module.addImport("Slam", module_slam);
+    exe_unit_tests.root_module.addImport("OpenCL", module_opencl);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
@@ -100,6 +114,6 @@ pub fn build(b: *std.Build) void {
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_lib_unit_tests.step);
+    //test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
 }

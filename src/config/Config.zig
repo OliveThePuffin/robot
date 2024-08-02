@@ -1,42 +1,39 @@
-const Slam = @import("../modules/slam/Slam.zig");
-const Module = @import("../modules/Module.zig");
-const LogLevel = @import("../modules/logger.zig").Level;
+const Slam = @import("Slam");
+const LogLevel = @import("logger").Level;
 const Config = @This();
-const std = @import("std");
 
-modules: []const ModuleConfig,
 log_level: LogLevel,
-
-const ModuleConfig = union(enum) {
-    slam: struct {
-        name: []const u8,
-        module_init: *const fn ([]const u8, std.mem.Allocator, Slam.Config) ?*Module,
-        config: Slam.Config,
-    },
-};
+slam: Slam.Config,
 
 pub const default = Config{
     .log_level = .INFO,
-    .modules = &[_]ModuleConfig{
-        ModuleConfig{ .slam = .{
-            .name = "SLAM",
-            .module_init = Slam.init,
-            .config = .{
-                .dry_run = false,
-            },
-        } },
+    .slam = .{
+        .dry_run = false,
+        .opencl = .{
+            .platform_name = "NVIDIA CUDA",
+            .device_name = "NVIDIA GeForce RTX 3080",
+        },
     },
 };
 
 pub const dry_run = Config{
     .log_level = .DEBUG,
-    .modules = &[_]ModuleConfig{
-        ModuleConfig{ .slam = .{
-            .name = "SLAM",
-            .module_init = Slam.init,
-            .config = .{
-                .dry_run = true,
-            },
-        } },
+    .slam = .{
+        .dry_run = true,
+        .opencl = .{
+            .platform_name = "NVIDIA CUDA",
+            .device_name = "NVIDIA GeForce RTX 3080",
+        },
+    },
+};
+
+pub const cpu_dry_run = Config{
+    .log_level = .DEBUG,
+    .slam = .{
+        .dry_run = true,
+        .opencl = .{
+            .platform_name = "Clover",
+            .device_name = "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 18.1.8, DRM 3.54, 6.6.43_1)",
+        },
     },
 };
