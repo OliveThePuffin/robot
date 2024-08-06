@@ -24,7 +24,4 @@ pub fn main() !void {
     Slam.stop();
 }
 
-test {
-    _ = logger;
-    _ = Slam;
-}
+test {}

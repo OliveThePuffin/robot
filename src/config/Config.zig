@@ -9,9 +9,11 @@ pub const default = Config{
     .log_level = .INFO,
     .slam = .{
         .dry_run = false,
-        .opencl = .{
-            .platform_name = "NVIDIA CUDA",
-            .device_name = "NVIDIA GeForce RTX 3080",
+        .kalman_filter = .{
+            .opencl = .{
+                .platform_name = "NVIDIA CUDA",
+                .device_name = "NVIDIA GeForce RTX 3080",
+            },
         },
     },
 };
@@ -20,9 +22,11 @@ pub const dry_run = Config{
     .log_level = .DEBUG,
     .slam = .{
         .dry_run = true,
-        .opencl = .{
-            .platform_name = "NVIDIA CUDA",
-            .device_name = "NVIDIA GeForce RTX 3080",
+        .kalman_filter = .{
+            .opencl = .{
+                .platform_name = "NVIDIA CUDA",
+                .device_name = "NVIDIA GeForce RTX 3080",
+            },
         },
     },
 };
@@ -31,9 +35,11 @@ pub const cpu_dry_run = Config{
     .log_level = .DEBUG,
     .slam = .{
         .dry_run = true,
-        .opencl = .{
-            .platform_name = "Clover",
-            .device_name = "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 18.1.8, DRM 3.54, 6.6.43_1)",
+        .kalman_filter = .{
+            .opencl = .{
+                .platform_name = "Clover",
+                .device_name = "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 18.1.8, DRM 3.54, 6.6.43_1)",
+            },
         },
     },
 };

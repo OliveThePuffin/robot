@@ -16,14 +16,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Modules
-    const cl_module = b.dependency("zig-opencl", .{ .target = target, .optimize = optimize }).module("opencl");
+    const module_cl = b.dependency("zig-opencl", .{ .target = target, .optimize = optimize }).module("opencl");
     const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
     const module_slam = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/Slam.zig") });
-    const module_opencl = b.addModule("OpenCL", .{ .root_source_file = b.path("src/opencl/OpenCL.zig") });
+    const module_ocl_helper = b.addModule("ocl_helper", .{ .root_source_file = b.path("src/opencl/cl_helper.zig") });
     const module_log = b.addModule("logger", .{ .root_source_file = b.path("src/logger.zig") });
-    module_opencl.addImport("opencl", cl_module);
-    module_opencl.addImport("logger", module_log);
-    module_slam.addImport("OpenCL", module_opencl);
+    module_ocl_helper.addImport("opencl", module_cl);
+    module_ocl_helper.addImport("logger", module_log);
+    module_slam.addImport("ocl_helper", module_ocl_helper);
     module_slam.addImport("logger", module_log);
 
     //const lib = b.addStaticLibrary(.{
@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("Config", module_config);
     exe.root_module.addImport("Slam", module_slam);
-    exe.root_module.addImport("OpenCL", module_opencl);
+    module_slam.addImport("ocl_helper", module_ocl_helper);
     exe.root_module.addImport("logger", module_log);
     exe.linkLibC();
     exe.linkSystemLibrary("c");
@@ -98,22 +98,23 @@ pub fn build(b: *std.Build) void {
 
     //const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    exe_unit_tests.root_module.addImport("logger", module_log);
-    exe_unit_tests.root_module.addImport("Config", module_config);
-    exe_unit_tests.root_module.addImport("Slam", module_slam);
-    exe_unit_tests.root_module.addImport("OpenCL", module_opencl);
-
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    const exe_unit_tests = .{
+        b.addTest(.{ .root_source_file = b.path("src/main.zig") }),
+        b.addTest(.{ .root_source_file = b.path("src/logger.zig") }),
+        b.addTest(.{ .root_source_file = b.path("src/config/Config.zig") }),
+        b.addTest(.{ .root_source_file = b.path("src/slam/Slam.zig") }),
+        b.addTest(.{ .root_source_file = b.path("src/slam/KalmanFilter.zig") }),
+    };
+    exe_unit_tests[4].root_module.addImport("ocl_helper", module_ocl_helper);
+    exe_unit_tests[4].root_module.addImport("logger", module_log);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
+
     const test_step = b.step("test", "Run unit tests");
-    //test_step.dependOn(&run_lib_unit_tests.step);
-    test_step.dependOn(&run_exe_unit_tests.step);
+    inline for (exe_unit_tests) |exe_unit_test| {
+        const run_exe_unit_test = b.addRunArtifact(exe_unit_test);
+        test_step.dependOn(&run_exe_unit_test.step);
+    }
 }
