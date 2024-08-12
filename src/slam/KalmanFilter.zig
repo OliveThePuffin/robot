@@ -74,6 +74,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
         const stage_count = @typeInfo(Stage).Enum.fields.len;
 
         const OpenCLData = struct {
+            allocator: std.mem.Allocator,
             platform_id: cl.platform.cl_platform_id,
             devices: []cl.device.cl_device_id,
             device_id: cl.device.cl_device_id,
@@ -268,6 +269,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
                 try cl.kernel.set_arg(kernels[updateCovariance5Id], 5, @sizeOf(u32), &measure_dim);
 
                 return OpenCLData{
+                    .allocator = allocator,
                     .platform_id = platform_id,
                     .devices = devices,
                     .device_id = device_id,
@@ -302,37 +304,38 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
                 };
             }
 
-            pub fn deinit(data: OpenCLData, allocator: std.mem.Allocator) void {
-                for (data.kernels) |k| {
-                    k.release() catch unreachable;
+            pub fn deinit(self: OpenCLData) void {
+                for (self.kernels) |kernel| {
+                    if (kernel) |k| cl.kernel.release(k) catch unreachable;
                 }
-                data.buffer_x.release();
-                data.buffer_z.release();
-                data.buffer_u.release();
-                data.buffer_F.release();
-                data.buffer_G.release();
-                data.buffer_P.release();
-                data.buffer_Q.release();
-                data.buffer_R.release();
-                data.buffer_H.release();
-                data.buffer_K.release();
+                if (self.buffer_x) |x| cl.buffer.release(x) catch unreachable;
+                if (self.buffer_z) |z| cl.buffer.release(z) catch unreachable;
+                if (self.buffer_u) |u| cl.buffer.release(u) catch unreachable;
+                if (self.buffer_F) |F| cl.buffer.release(F) catch unreachable;
+                if (self.buffer_G) |G| cl.buffer.release(G) catch unreachable;
+                if (self.buffer_P) |P| cl.buffer.release(P) catch unreachable;
+                if (self.buffer_Q) |Q| cl.buffer.release(Q) catch unreachable;
+                if (self.buffer_R) |R| cl.buffer.release(R) catch unreachable;
+                if (self.buffer_H) |H| cl.buffer.release(H) catch unreachable;
+                if (self.buffer_K) |K| cl.buffer.release(K) catch unreachable;
 
-                data.buffer_PHT.release();
-                data.buffer_HPHTR.release();
-                data.buffer_HPHTRL.release();
-                data.buffer_HPHTRU.release();
-                data.buffer_HPHTRI.release();
+                if (self.buffer_PHT) |PHT| cl.buffer.release(PHT) catch unreachable;
+                if (self.buffer_HPHTR) |HPHTR| cl.buffer.release(HPHTR) catch unreachable;
+                if (self.buffer_HPHTRL) |HPHTRL| cl.buffer.release(HPHTRL) catch unreachable;
+                if (self.buffer_HPHTRU) |HPHTRU| cl.buffer.release(HPHTRU) catch unreachable;
+                if (self.buffer_HPHTRI) |HPHTRI| cl.buffer.release(HPHTRI) catch unreachable;
 
-                data.buffer_IKH.release();
-                data.buffer_IKHP.release();
-                data.buffer_IKHPIKHT.release();
-                data.buffer_KR.release();
+                if (self.buffer_IKH) |IKH| cl.buffer.release(IKH) catch unreachable;
+                if (self.buffer_IKHP) |IKHP| cl.buffer.release(IKHP) catch unreachable;
+                if (self.buffer_IKHPIKHT) |IKHPIKHT| cl.buffer.release(IKHPIKHT) catch unreachable;
+                if (self.buffer_KR) |KR| cl.buffer.release(KR) catch unreachable;
 
-                data.program.release() catch unreachable;
-                data.queue_covariance.release() catch unreachable;
-                data.queue_state.release() catch unreachable;
-                data.context.release() catch unreachable;
-                allocator.free(data.devices);
+                if (self.queue_covariance) |queue_covariance| cl.command_queue.release(queue_covariance) catch unreachable;
+                if (self.queue_state) |queue_state| cl.command_queue.release(queue_state) catch unreachable;
+                if (self.program) |program| cl.program.release(program) catch unreachable;
+                if (self.context) |context| cl.context.release(context) catch unreachable;
+
+                self.allocator.free(self.devices);
             }
         };
         aa: std.heap.ArenaAllocator,

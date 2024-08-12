@@ -104,6 +104,7 @@ pub fn build(b: *std.Build) void {
         b.addTest(.{ .root_source_file = b.path("src/config/Config.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/slam/Slam.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/slam/KalmanFilter.zig") }),
+        b.addTest(.{ .root_source_file = b.path("src/slam/IkdTree.zig") }),
     };
     exe_unit_tests[4].root_module.addImport("ocl_helper", module_ocl_helper);
     exe_unit_tests[4].root_module.addImport("logger", module_log);

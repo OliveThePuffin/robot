@@ -2,6 +2,7 @@ const std = @import("std");
 const log = @import("logger").log;
 const rs_depth = @import("rs-depth.zig");
 const KalmanFilter = @import("KalmanFilter.zig").KalmanFilter(2, 1, 1);
+const IKDTree = @import("IKDTree.zig").IKDTree;
 const Slam = @This();
 
 const name = "SLAM";
@@ -24,8 +25,39 @@ pub fn stop() void {
     rs_depth.stop_loop();
 }
 
+pub const Dimensions = enum(u8) {
+    X,
+    Y,
+    Z,
+};
+
 pub fn init(config: Config) !void {
     log(.INFO, name, "Initializing", .{});
+
+    const points = try allocator.alloc([3]f32, 8);
+    points[0] = .{ 0, 0, 0 };
+    points[1] = .{ 0, 0, 1 };
+    points[2] = .{ 0, 1, 0 };
+    points[3] = .{ 0, 1, 1 };
+    points[4] = .{ 1, 0, 0 };
+    points[5] = .{ 1, 0, 1 };
+    points[6] = .{ 1, 1, 0 };
+    points[7] = .{ 1, 1, 1 };
+
+    var ikd = try IKDTree(Dimensions).init(points, allocator);
+
+    ikd.print();
+    ikd.add([3]f32{ 0.5, 0.5, 0.5 });
+    ikd.add([3]f32{ 0.5, 1.5, 0.5 });
+    ikd.add([3]f32{ 1.5, 0.75, 0.25 });
+    ikd.add([3]f32{ 0.5, 0.25, 0.75 });
+    ikd.add([3]f32{ 0.5, 0.5, 1.125 });
+    ikd.remove([3]f32{ 0.5, 0.5, 1.125 });
+    ikd.remove([3]f32{ 1, 0, 0 });
+    ikd.readd([3]f32{ 0.5, 0.5, 1.125 });
+    ikd.print();
+
+    allocator.free(points);
 
     kf = try KalmanFilter.init(
         config.kalman_filter,
@@ -49,6 +81,8 @@ pub fn init(config: Config) !void {
     );
 
     log(.INFO, name, "x_1: {d}", .{x});
+    kf.deinit();
+    ikd.deinit();
 
     rs_depth.module_config = .{ .dry_run = config.dry_run };
 }

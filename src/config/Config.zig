@@ -38,7 +38,7 @@ pub const cpu_dry_run = Config{
         .kalman_filter = .{
             .opencl = .{
                 .platform_name = "Clover",
-                .device_name = "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 18.1.8, DRM 3.54, 6.6.43_1)",
+                .device_name = "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 18.1.8, DRM 3.54, 6.6.44_1)",
             },
         },
     },
