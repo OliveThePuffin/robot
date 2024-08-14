@@ -3,8 +3,6 @@ const Slam = @import("Slam");
 const logger = @import("logger");
 const std = @import("std");
 
-//const rs_depth = @import("rs-depth.zig");
-
 pub fn main() !void {
 
     // Read config

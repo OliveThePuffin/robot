@@ -1,8 +1,8 @@
 const std = @import("std");
 const log = @import("logger").log;
 
-// TODO: implement https://arxiv.org/pdf/2102.10808
-// Section III.C.2
+// Based on https://arxiv.org/pdf/2102.10808
+// TODO: Section III.C.4 onwards
 pub fn IKDTree(comptime Axes: type) type {
     std.debug.assert(@typeInfo(Axes) == .Enum);
     const K = std.meta.fields(Axes).len;
@@ -152,6 +152,153 @@ pub fn IKDTree(comptime Axes: type) type {
                 };
                 return node;
             }
+
+            fn recursiveReadd(node: *Node, point: [K]f32) bool {
+                const axis = @intFromEnum(node.axis_enum);
+                var found = false;
+                const equal = for (0..K) |k| {
+                    if (node.point[k] != point[k]) break false;
+                } else true;
+                if (equal) {
+                    if (!node.deleted) {
+                        log(.WARN, name, "Attempting to add already added node", .{});
+                    }
+                    node.deleted = false;
+                    return true;
+                }
+
+                const left_bound = axisOrder(axis, point, node.point);
+                if (left_bound) {
+                    if (node.left) |left| {
+                        found = recursiveReadd(left, point);
+                    }
+                } else {
+                    if (node.right) |right| {
+                        found = found or recursiveReadd(right, point);
+                    }
+                }
+                return found;
+            }
+
+            fn recursiveAdd(node: *Node, point: [K]f32, alloc: std.mem.Allocator) void {
+                const axis = @intFromEnum(node.axis_enum);
+                const left_bound = axisOrder(axis, point, node.point);
+                if (left_bound) {
+                    if (node.left) |left| {
+                        recursiveAdd(left, point, alloc);
+                    } else {
+                        node.left = alloc.create(Node) catch |err| {
+                            log(.ERROR, name, "Failed to create node: {s}", .{@errorName(err)});
+                            return;
+                        };
+                        node.left.?.* = Node{
+                            .point = point,
+                            .axis_enum = node.axis_enum,
+                            .left = null,
+                            .right = null,
+                        };
+                    }
+                } else {
+                    if (node.right) |right| {
+                        recursiveAdd(right, point, alloc);
+                    } else {
+                        node.right = alloc.create(Node) catch |err| {
+                            log(.ERROR, name, "Failed to create node: {s}", .{@errorName(err)});
+                            return;
+                        };
+                        node.right.?.* = Node{
+                            .point = point,
+                            .axis_enum = node.axis_enum,
+                            .left = null,
+                            .right = null,
+                        };
+                    }
+                }
+            }
+
+            fn recursiveRemove(node: *Node, point: [K]f32) bool {
+                const axis = @intFromEnum(node.axis_enum);
+                var found = false;
+                const equal = for (0..K) |k| {
+                    if (node.point[k] != point[k]) break false;
+                } else true;
+                if (equal) {
+                    if (node.deleted) {
+                        log(.WARN, name, "Attempting to remove already deleted node", .{});
+                    }
+                    node.deleted = true;
+                    return true;
+                }
+
+                const left_bound = axisOrder(axis, point, node.point);
+                if (left_bound) {
+                    if (node.left) |left| {
+                        found = recursiveRemove(left, point);
+                    }
+                } else {
+                    if (node.right) |right| {
+                        found = found or recursiveRemove(right, point);
+                    }
+                }
+                return found;
+            }
+
+            fn checkIntersection(node: *Node, mins: [K]f32, maxs: [K]f32) bool {
+                var intersect = true;
+                for (0..K) |k| {
+                    intersect &= (node.minimums[k] < maxs[k] and node.maximums[k] > mins[k]);
+                }
+                return intersect;
+            }
+
+            fn checkSubset(node: *Node, mins: [K]f32, maxs: [K]f32) bool {
+                var subset = true;
+                for (0..K) |k| {
+                    subset &= (node.minimums[k] >= mins[k] and node.maximums[k] <= maxs[k]);
+                }
+                return subset;
+            }
+
+            fn checkContained(node: *Node, mins: [K]f32, maxs: [K]f32) bool {
+                var contained = true;
+                for (0..K) |k| {
+                    contained &= (node.point[k] >= mins[k] and node.point[k] <= maxs[k]);
+                }
+                return contained;
+            }
+
+            fn recursiveRemoveBox(node: *Node, mins: [K]f32, maxs: [K]f32) void {
+                pushDown(node);
+                // if the node range is outside the box, return
+                if (!checkIntersection(node, mins, maxs))
+                    return;
+                // if the node is a subset of the box, mark the tree and node as deleted
+                if (checkSubset(node, mins, maxs)) {
+                    node.tree_deleted = true;
+                    node.deleted = true;
+                    node.push_down = true;
+                    return;
+                }
+                if (checkContained(node, mins, maxs)) {
+                    node.deleted = true;
+                    recursiveRemoveBox(node.left, mins, maxs);
+                    recursiveRemoveBox(node.right, mins, maxs);
+                }
+                pullUp(node);
+                // TODO: finish me
+                //if (violateCriterion(node)) {
+                //    if (node.tree_size < n_max) {
+                //        rebuildTree(node);
+                //    } else {
+                //        ThreadSpawn(ParallelRebuild, node);
+                //    }
+
+                //}
+            }
+
+            fn axisOrder(axis_id: usize, lhs: [K]f32, rhs: [K]f32) bool {
+                return (lhs[axis_id] < rhs[axis_id]);
+            }
         };
 
         root: *Node,
@@ -180,120 +327,36 @@ pub fn IKDTree(comptime Axes: type) type {
             self.root.printSubtree("", true);
         }
 
+        // Add many points
+        pub fn addMany(self: *Self, points: [][K]f32) void {
+            for (points) |point| {
+                add(self, point);
+            }
+        }
         // Add a point
         pub fn add(self: *Self, point: [K]f32) void {
-            addRecursive(self.root, point, self.alloc);
+            self.root.recursiveAdd(point, self.alloc);
         }
 
         pub fn readd(self: *Self, point: [K]f32) void {
-            if (!readdRecursive(self.root, point)) {
+            if (!self.root.recursiveReadd(point)) {
                 log(.WARN, name, "No such point {d} found", .{point});
             }
         }
 
-        fn readdRecursive(node: *Node, point: [K]f32) bool {
-            const axis = @intFromEnum(node.axis_enum);
-            var found = false;
-            const equal = for (0..K) |k| {
-                if (node.point[k] != point[k]) break false;
-            } else true;
-            if (equal) {
-                if (!node.deleted) {
-                    log(.WARN, name, "Attempting to add already added node", .{});
-                }
-                node.deleted = false;
-                return true;
-            }
-
-            const left_bound = axisOrder(axis, point, node.point);
-            if (left_bound) {
-                if (node.left) |left| {
-                    found = readdRecursive(left, point);
-                }
-            } else {
-                if (node.right) |right| {
-                    found = found or readdRecursive(right, point);
-                }
-            }
-            return found;
+        // Remove all points in a box
+        pub fn removeBox(self: *Self, mins: [K]f32, maxs: [K]f32) void {
+            self.root.recursiveRemoveBox(mins, maxs);
         }
 
-        fn addRecursive(node: *Node, point: [K]f32, alloc: std.mem.Allocator) void {
-            const axis = @intFromEnum(node.axis_enum);
-            const left_bound = axisOrder(axis, point, node.point);
-            if (left_bound) {
-                if (node.left) |left| {
-                    addRecursive(left, point, alloc);
-                } else {
-                    node.left = alloc.create(Node) catch |err| {
-                        log(.ERROR, name, "Failed to create node: {s}", .{@errorName(err)});
-                        return;
-                    };
-                    node.left.?.* = Node{
-                        .point = point,
-                        .axis_enum = node.axis_enum,
-                        .left = null,
-                        .right = null,
-                    };
-                }
-            } else {
-                if (node.right) |right| {
-                    addRecursive(right, point, alloc);
-                } else {
-                    node.right = alloc.create(Node) catch |err| {
-                        log(.ERROR, name, "Failed to create node: {s}", .{@errorName(err)});
-                        return;
-                    };
-                    node.right.?.* = Node{
-                        .point = point,
-                        .axis_enum = node.axis_enum,
-                        .left = null,
-                        .right = null,
-                    };
-                }
-            }
-        }
-
-        pub fn addBox() void {}
+        // Remove a point
         pub fn remove(self: *Self, point: [K]f32) void {
-            if (!removeRecursive(self.root, point)) {
+            if (!self.root.recursiveRemove(point)) {
                 log(.WARN, name, "No such point {d} found", .{point});
             }
         }
-
-        fn removeRecursive(node: *Node, point: [K]f32) bool {
-            const axis = @intFromEnum(node.axis_enum);
-            var found = false;
-            const equal = for (0..K) |k| {
-                if (node.point[k] != point[k]) break false;
-            } else true;
-            if (equal) {
-                if (node.deleted) {
-                    log(.WARN, name, "Attempting to remove already deleted node", .{});
-                }
-                node.deleted = true;
-                return true;
-            }
-
-            const left_bound = axisOrder(axis, point, node.point);
-            if (left_bound) {
-                if (node.left) |left| {
-                    found = removeRecursive(left, point);
-                }
-            } else {
-                if (node.right) |right| {
-                    found = found or removeRecursive(right, point);
-                }
-            }
-            return found;
-        }
-        pub fn removeBox() void {}
         pub fn search() void {}
         pub fn nearestNeighbor() void {}
-
-        fn axisOrder(axis_id: usize, lhs: [K]f32, rhs: [K]f32) bool {
-            return (lhs[axis_id] < rhs[axis_id]);
-        }
     };
 }
 
