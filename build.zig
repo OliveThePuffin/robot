@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
 
     // Modules
     const module_cl = b.dependency("zig-opencl", .{ .target = target, .optimize = optimize }).module("opencl");
+    const module_web = b.dependency("zap", .{ .target = target, .optimize = optimize, .openssl = false }).module("zap");
     const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
     const module_slam = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/Slam.zig") });
     const module_ocl_helper = b.addModule("ocl_helper", .{ .root_source_file = b.path("src/opencl/cl_helper.zig") });
@@ -47,6 +48,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.root_module.addImport("zap", module_web);
     exe.root_module.addImport("Config", module_config);
     exe.root_module.addImport("Slam", module_slam);
     module_slam.addImport("ocl_helper", module_ocl_helper);

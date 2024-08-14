@@ -25,13 +25,11 @@
     .dependencies = .{
         .@"zig-opencl" = .{
             .url = "zig-opencl",
-            .hash = "1220f0554a7dad30a916e0310178123a7d01d485c1223b87b9fa5aad32da68767357",
+            .hash = "1220eb753b63694d957f9ec6a7fb8da3497804b431d050ae0b445401d7f50cb3a639",
         },
-        .modules = .{
-            .path = "src/modules",
-        },
-        .config = .{
-            .path = "src/config",
+        .zap = .{
+            .url = "zap",
+            .hash = "122083ead09039a1ab0a322f6b8d9b87c2a6f487a8d63cde2ce889c8457138ae81ac",
         },
     },
     .paths = .{

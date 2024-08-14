@@ -1,4 +1,4 @@
-[submodule "code/zig-opencl"]
+[submodule "zig-opencl"]
 	path = zig-opencl
 	url = https://github.com/kython28/zig-opencl
 [submodule "zap"]
