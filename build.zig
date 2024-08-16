@@ -54,7 +54,6 @@ pub fn build(b: *std.Build) void {
     module_slam.addImport("ocl_helper", module_ocl_helper);
     exe.root_module.addImport("logger", module_log);
     exe.linkLibC();
-    exe.linkSystemLibrary("c");
     exe.linkSystemLibrary("realsense2");
 
     exe.addIncludePath(.{ .src_path = .{

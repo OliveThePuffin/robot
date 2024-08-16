@@ -34,30 +34,38 @@ pub const Dimensions = enum(u8) {
 pub fn init(config: Config) !void {
     log(.INFO, name, "Initializing", .{});
 
-    const points = try allocator.alloc([3]f32, 8);
-    points[0] = .{ 0, 0, 0 };
-    points[1] = .{ 0, 0, 1 };
-    points[2] = .{ 0, 1, 0 };
-    points[3] = .{ 0, 1, 1 };
-    points[4] = .{ 1, 0, 0 };
-    points[5] = .{ 1, 0, 1 };
-    points[6] = .{ 1, 1, 0 };
-    points[7] = .{ 1, 1, 1 };
+    const points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
 
     var ikd = try IKDTree(Dimensions).init(points, allocator);
-
-    ikd.print();
-    ikd.add([3]f32{ 0.5, 0.5, 0.5 });
-    ikd.add([3]f32{ 0.5, 1.5, 0.5 });
-    ikd.add([3]f32{ 1.5, 0.75, 0.25 });
-    ikd.add([3]f32{ 0.5, 0.25, 0.75 });
-    ikd.add([3]f32{ 0.5, 0.5, 1.125 });
-    ikd.remove([3]f32{ 0.5, 0.5, 1.125 });
-    ikd.remove([3]f32{ 1, 0, 0 });
-    ikd.readd([3]f32{ 0.5, 0.5, 1.125 });
-    ikd.print();
-
     allocator.free(points);
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 0, 0, 3 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 0, 3, 0 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 0, 3, 3 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 3, 0, 0 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 3, 0, 3 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 3, 3, 0 });
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 3, 3, 3 });
+    try ikd.print();
 
     kf = try KalmanFilter.init(
         config.kalman_filter,
@@ -94,7 +102,5 @@ pub fn deinit() void {
         log(.ERROR, name, "Memory leaks detected", .{});
     }
 }
-
-// TODO: also try adding a kalman filter here
 
 test {}
