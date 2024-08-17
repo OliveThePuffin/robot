@@ -6,6 +6,7 @@ const IKDTree = @import("IKDTree.zig").IKDTree;
 const Slam = @This();
 
 const name = "SLAM";
+const I3DTree = IKDTree(Dimensions);
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
 var kf: KalmanFilter = undefined;
@@ -13,6 +14,7 @@ var kf: KalmanFilter = undefined;
 pub const Config = struct {
     dry_run: bool,
     kalman_filter: KalmanFilter.Config,
+    ikd_tree: I3DTree.Config,
 };
 
 pub fn start() void {
@@ -47,23 +49,16 @@ pub fn init(config: Config) !void {
         }
     }
 
-    var ikd = try IKDTree(Dimensions).init(points, allocator);
+    var ikd = try I3DTree.init(points, config.ikd_tree, allocator);
     allocator.free(points);
     try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 0, 0, 3 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 0, 3, 0 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 0, 3, 3 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 3, 0, 0 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 3, 0, 3 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 3, 3, 0 });
-    try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 3, 3, 3 });
     try ikd.print();
 

@@ -3,13 +3,24 @@ const log = @import("logger").log;
 
 // Based on https://arxiv.org/pdf/2102.10808
 // TODO: Section III.C.4 onwards
-pub fn IKDTree(comptime Axes: type) type {
-    std.debug.assert(@typeInfo(Axes) == .Enum);
-    const K = std.meta.fields(Axes).len;
-    const name = "IKDTree";
 
+// Hypothesis: Due to the many creates and destroys
+// the IKDTree pairs best with FixedBufferAllocator
+pub fn IKDTree(comptime Axes: type) type {
+    comptime {
+        std.debug.assert(@typeInfo(Axes) == .Enum);
+    }
+    const K = std.meta.fields(Axes).len;
     return struct {
         const Self = @This();
+        const name = "IKDTree";
+        pub const Config = struct {
+            a_bal: f32,
+            a_del: f32,
+            enable_parallel: bool,
+            max_size_single_thread_rebuild: usize,
+        };
+
         const Node = struct {
             point: [K]f32,
             axis_enum: Axes,
@@ -27,17 +38,19 @@ pub fn IKDTree(comptime Axes: type) type {
             // Pushes values down the tree
             // push_down, tree_deleted, deleted
             pub fn pushDown(node: *Node) void {
-                if (node.left) |left| {
-                    left.push_down = node.push_down;
-                    left.tree_deleted = node.tree_deleted;
-                    left.deleted = node.deleted;
+                if (node.push_down) {
+                    if (node.left) |left| {
+                        left.push_down = node.push_down;
+                        left.tree_deleted = node.tree_deleted;
+                        left.deleted = node.deleted;
+                    }
+                    if (node.right) |right| {
+                        right.push_down = node.push_down;
+                        right.tree_deleted = node.tree_deleted;
+                        right.deleted = node.deleted;
+                    }
+                    node.push_down = false;
                 }
-                if (node.right) |right| {
-                    right.push_down = node.push_down;
-                    right.tree_deleted = node.tree_deleted;
-                    right.deleted = node.deleted;
-                }
-                node.push_down = false;
             }
 
             // Pulls up (Calculates) info from below the subtree
@@ -49,7 +62,7 @@ pub fn IKDTree(comptime Axes: type) type {
                     node.maximums[k] = node.point[k];
                 }
                 node.tree_size = 1;
-                node.invalid_num = @intFromBool(!node.deleted);
+                node.invalid_num = @intFromBool(node.deleted);
 
                 // pull up the subtrees
                 if (node.left) |left| {
@@ -104,7 +117,6 @@ pub fn IKDTree(comptime Axes: type) type {
                 }
             }
 
-            // For greatest efficiency, make the allocator a fixed buffer allocator
             fn buildSubtree(Vec: [][K]f32, alloc: std.mem.Allocator) !?*Node {
                 if (Vec.len == 0) {
                     return null;
@@ -148,6 +160,40 @@ pub fn IKDTree(comptime Axes: type) type {
             }
 
             fn rebuildSubtree(node: *Node, alloc: std.mem.Allocator) !?*Node {
+                const nodes = try node.flatten(alloc);
+                defer alloc.free(nodes);
+
+                // get only points from the nodes
+                var points: [][K]f32 = try alloc.alloc([K]f32, nodes.len);
+                defer alloc.free(points);
+                for (nodes, 0..) |n, h| {
+                    points[h] = n.point;
+                }
+                return try Node.buildSubtree(points, alloc);
+            }
+
+            fn rebuildSubtreeParallel(node: *Node, alloc: std.mem.Allocator) !?*Node {
+                // TODO: implement the following
+                // LockUpdates(node);
+                // This makes insert, reinsert, and delete not accessible
+                // queries are still possible (such as nearest neighbor)
+                //
+                // Flatten(node);
+                //
+                // UnlockUpdates(node);
+                // After unlock, all incremental updates are suspended and recorded
+                // in an operation logger
+                //
+                // buildSubtree(arr);
+                // for each op in operationLogger do
+                //      incrementalUpdates(node, op, disable_parallel);
+                // end
+                // node_temp = node;
+                // LockAll(node); // This makes no operations on the tree accessible
+                // node = new_node;
+                // UnlockAll(node);
+                // free(node_temp);
+
                 const nodes = try node.flatten(alloc);
                 defer alloc.free(nodes);
 
@@ -307,7 +353,7 @@ pub fn IKDTree(comptime Axes: type) type {
             }
 
             // Deletes or reinserts nodes in the tree
-            fn recursiveUpdateBox(node: *Node, delete: bool, enable_parallel: bool, mins: [K]f32, maxs: [K]f32, alloc: std.mem.Allocator) !?*Node {
+            fn recursiveUpdateBox(node: *Node, delete: bool, config: Config, mins: [K]f32, maxs: [K]f32, alloc: std.mem.Allocator) !?*Node {
                 pushDown(node);
                 // if the node range is outside the box, return
                 if (!checkIntersection(node, mins, maxs))
@@ -322,14 +368,14 @@ pub fn IKDTree(comptime Axes: type) type {
                         node.deleted = delete;
                     }
                     if (node.left) |left| {
-                        const new_left = try recursiveUpdateBox(left, delete, enable_parallel, mins, maxs, alloc);
+                        const new_left = try recursiveUpdateBox(left, delete, config, mins, maxs, alloc);
                         if (new_left != node.left) {
                             recursiveFree(left, alloc);
                             node.left = new_left;
                         }
                     }
                     if (node.right) |right| {
-                        const new_right = try recursiveUpdateBox(right, delete, enable_parallel, mins, maxs, alloc);
+                        const new_right = try recursiveUpdateBox(right, delete, config, mins, maxs, alloc);
                         if (new_right != node.right) {
                             recursiveFree(right, alloc);
                             node.right = new_right;
@@ -337,28 +383,21 @@ pub fn IKDTree(comptime Axes: type) type {
                     }
                 }
                 pullUp(node);
-                // TODO: finish me (rebuild to balance)
-                //if (violateCriterion(node)) {
-                //    if (node.tree_size < n_max or !enable_parallel) {
-                //        rebuildTree(node);
-                return try balanceSubtree(node, alloc);
-                //    } else {
-                //        ThreadSpawn(ParallelRebuild, node);
-                //    }
-
-                //}
+                return try balanceSubtree(node, config, alloc);
             }
 
             fn axisOrder(axis_id: usize, lhs: [K]f32, rhs: [K]f32) bool {
                 return (lhs[axis_id] < rhs[axis_id]);
             }
 
-            fn balanceSubtree(node: *Node, alloc: std.mem.Allocator) !?*Node {
+            fn balanceSubtree(node: *Node, config: Config, alloc: std.mem.Allocator) !?*Node {
                 // The lower these values are, the more likely it is that the tree will be rebalanced
                 // α_bal ∈ (0.5, 1)
-                const a_bal = 0.6;
+                //const a_bal = 0.7;
+                const a_bal = config.a_bal;
                 // α_del ∈ (0, 1)
-                const a_del = 0.25;
+                //const a_del = 0.5;
+                const a_del = config.a_del;
 
                 const treesize = @as(f32, @floatFromInt(node.tree_size));
                 const treesize_left = @as(f32, @floatFromInt(if (node.left) |left| left.tree_size else 0));
@@ -369,6 +408,13 @@ pub fn IKDTree(comptime Axes: type) type {
                 const balanced_right = treesize_right < a_bal * (treesize - 1);
                 const low_invalid = num_invalid < a_del * treesize;
 
+                // TODO: finish me (rebuild to balance)
+                //if (node.tree_size < n_max or !enable_parallel) {
+                //      rebuildTree(node);
+                //    } else {
+                //        ThreadSpawn(ParallelRebuild, node);
+                //    }
+                //}
                 if (!balanced_left or !balanced_right or !low_invalid) {
                     return try rebuildSubtree(node, alloc);
                 }
@@ -377,12 +423,14 @@ pub fn IKDTree(comptime Axes: type) type {
         };
 
         root: ?*Node,
+        config: Config,
         alloc: std.mem.Allocator,
 
-        pub fn init(Vec: [][K]f32, alloc: std.mem.Allocator) !Self {
+        pub fn init(Vec: [][K]f32, config: Config, alloc: std.mem.Allocator) !Self {
             return .{
                 .root = try Node.buildSubtree(Vec, alloc),
                 .alloc = alloc,
+                .config = config,
             };
         }
         pub fn deinit(self: *Self) void {
@@ -405,25 +453,35 @@ pub fn IKDTree(comptime Axes: type) type {
         pub fn insert(self: *Self, point: [K]f32) !void {
             if (self.root == null) {
                 self.root = try Node.buildSubtree(@constCast(&[_][K]f32{point}), self.alloc);
-            } else if (!Node.recursiveUpdate(self.root.?, point, false)) {
-                try Node.recursiveInsert(self.root.?, point, self.alloc);
+            } else {
+                if (!Node.recursiveUpdate(self.root.?, point, false))
+                    try Node.recursiveInsert(self.root.?, point, self.alloc);
+                Node.pullUp(self.root.?);
             }
         }
 
         pub fn insertMany(self: *Self, points: [][K]f32) !void {
             for (points) |point| {
-                try insert(self, point);
+                if (self.root == null) {
+                    self.root = try Node.buildSubtree(@constCast(&[_][K]f32{point}), self.alloc);
+                } else if (!Node.recursiveUpdate(self.root.?, point, false)) {
+                    try Node.recursiveInsert(self.root.?, point, self.alloc);
+                }
+            }
+            if (self.root) |root| {
+                Node.pullUp(root);
+                return try Node.balanceSubtree(root, self.config, self.alloc);
             }
         }
 
         // Reinsert all points in a box
         pub fn reinsertBox(self: *Self, mins: [K]f32, maxs: [K]f32) !void {
-            try Node.recursiveUpdateBox(self.root, false, true, mins, maxs, self.alloc);
+            try Node.recursiveUpdateBox(self.root, false, self.config.enable_parallel, mins, maxs, self.alloc);
         }
 
         // Remove all points in a box
         pub fn removeBox(self: *Self, mins: [K]f32, maxs: [K]f32) !void {
-            try Node.recursiveUpdateBox(self.root, true, true, mins, maxs, self.alloc);
+            try Node.recursiveUpdateBox(self.root, true, self.config.enable_parallel, mins, maxs, self.alloc);
         }
 
         // Remove a point
@@ -440,10 +498,7 @@ pub fn IKDTree(comptime Axes: type) type {
             var hypercube_lengths: [K]usize = undefined;
             var total_hypercubes: usize = 1;
 
-            // TODO: fix hypercube length math
-            // (see output: point should be in (2.4, 2.4, 2.4)-(4.8, 4.8, 4.8) not (0, 2.4, 2.4)-(2.4, 4.8, 4.8))
-            // when there are no points in (0, 0, 0) - (4.8, 2.4, 2.4))
-            //
+            // coord of minimum hypercube from origin
             var min_hypercube: [K]f32 = undefined;
             for (0..K) |k| {
                 min_hypercube[k] = @floor(root.minimums[k] / length);
@@ -457,7 +512,7 @@ pub fn IKDTree(comptime Axes: type) type {
             // get the hypercube that the point is in
             var hypercube: [K]usize = undefined;
             inline for (0..K) |k| {
-                hypercube[k] = @intFromFloat(@divFloor(point[k] - root.minimums[k], length));
+                hypercube[k] = @intFromFloat(@divFloor(point[k], length));
             }
 
             var hypercube_mins: [K]f32 = undefined;
@@ -469,7 +524,6 @@ pub fn IKDTree(comptime Axes: type) type {
 
             // get all points in the hypercube
             const hypercube_nodes = try root.recursiveSearchBox(hypercube_mins, hypercube_maxs, self.alloc);
-            log(.INFO, name, "Hypercube Nodes: {} Min: {d} Max: {d}", .{ hypercube_nodes.len, hypercube_mins, hypercube_maxs });
             defer self.alloc.free(hypercube_nodes);
 
             // get only points from the nodes
@@ -488,15 +542,17 @@ pub fn IKDTree(comptime Axes: type) type {
             }
             // TODO: get nearest neighbor to the center of the hypercube
             const center_point = hypercube_tree.point;
-            log(.INFO, name, "Center point: {d}", .{center_point});
 
             // Delete all nodes in the hypercube
-            const new_node = try Node.recursiveUpdateBox(root, true, true, hypercube_mins, hypercube_maxs, self.alloc);
+            const new_node = try Node.recursiveUpdateBox(root, true, self.config, hypercube_mins, hypercube_maxs, self.alloc);
             if (self.root) |old_root| {
-                old_root.recursiveFree(self.alloc);
+                if (old_root != new_node) {
+                    old_root.recursiveFree(self.alloc);
+                    self.root = new_node;
+                }
+            } else {
+                self.root = new_node;
             }
-            self.root = new_node;
-            log(.INFO, name, "New root: {?d}", .{if (new_node) |n| n.point else null});
 
             try self.insert(center_point);
         }
@@ -506,4 +562,71 @@ pub fn IKDTree(comptime Axes: type) type {
     };
 }
 
-test {}
+test {
+    @import("logger").logLevelSet(.NONE);
+    const Dimensions = enum(u8) {
+        X,
+        Y,
+        Z,
+    };
+    const I3DTree = IKDTree(Dimensions);
+    const allocator = std.testing.allocator;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 1,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    allocator.free(points);
+
+    try std.testing.expectEqual(ikd.root.?.tree_size, 125);
+    try ikd.insert(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(ikd.root.?.tree_size, 126);
+
+    points = try allocator.alloc([3]f32, 8);
+    for (0..2) |i| {
+        for (0..2) |j| {
+            for (0..2) |k| {
+                points[i * 4 + j * 2 + k] = .{
+                    @as(f32, @floatFromInt(i)) * 2.4 + 1.2,
+                    @as(f32, @floatFromInt(j)) * 2.4 + 1.2,
+                    @as(f32, @floatFromInt(k)) * 2.4 + 1.2,
+                };
+            }
+        }
+    }
+    try ikd.insertMany(points);
+    allocator.free(points);
+    try std.testing.expectEqual(ikd.root.?.tree_size, 134);
+    try ikd.remove(.{ 0.5, 0.5, 0.5 });
+    try ikd.removeBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
+    try ikd.reinsertBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
+
+    try ikd.print();
+    try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
+    try ikd.downsample(2.4, [3]f32{ 0, 0, 3 });
+    try ikd.downsample(2.4, [3]f32{ 0, 3, 0 });
+    try ikd.downsample(2.4, [3]f32{ 0, 3, 3 });
+    try ikd.downsample(2.4, [3]f32{ 3, 0, 0 });
+    try ikd.downsample(2.4, [3]f32{ 3, 0, 3 });
+    try ikd.downsample(2.4, [3]f32{ 3, 3, 0 });
+    try ikd.downsample(2.4, [3]f32{ 3, 3, 3 });
+    try std.testing.expectEqual(ikd.root.?.tree_size, 7);
+    try ikd.print();
+}
