@@ -36,7 +36,7 @@ pub const Dimensions = enum(u8) {
 pub fn init(config: Config) !void {
     log(.INFO, name, "Initializing", .{});
 
-    const points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
     for (0..5) |i| {
         for (0..5) |j| {
             for (0..5) |k| {
@@ -51,6 +51,26 @@ pub fn init(config: Config) !void {
 
     var ikd = try I3DTree.init(points, config.ikd_tree, allocator);
     allocator.free(points);
+
+    try ikd.insert(.{ 0.5, 0.5, 0.5 });
+
+    points = try allocator.alloc([3]f32, 8);
+    for (0..2) |i| {
+        for (0..2) |j| {
+            for (0..2) |k| {
+                points[i * 4 + j * 2 + k] = .{
+                    @as(f32, @floatFromInt(i)) * 2.4 + 1.2,
+                    @as(f32, @floatFromInt(j)) * 2.4 + 1.2,
+                    @as(f32, @floatFromInt(k)) * 2.4 + 1.2,
+                };
+            }
+        }
+    }
+    try ikd.insertMany(points);
+    allocator.free(points);
+    try ikd.remove(.{ 0.5, 0.5, 0.5 });
+    try ikd.removeBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
+
     try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
     try ikd.downsample(2.4, [3]f32{ 0, 0, 3 });

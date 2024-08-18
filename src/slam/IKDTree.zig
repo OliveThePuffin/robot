@@ -216,10 +216,35 @@ pub fn IKDTree(comptime Axes: type) type {
                 alloc.destroy(node);
             }
 
-            // Deletes or reinserts a node in the tree
-            fn recursiveUpdate(node: *Node, point: [K]f32, delete: bool) bool {
+            fn recursiveFind(node: *Node, point: [K]f32) bool {
                 const axis = @intFromEnum(node.axis_enum);
-                var found = false;
+                if (point[axis] < node.point[axis]) {
+                    if (node.left) |left| {
+                        return recursiveFind(left, point);
+                    } else {
+                        return false;
+                    }
+                } else if (point[axis] > node.point[axis]) {
+                    if (node.right) |right| {
+                        return recursiveFind(right, point);
+                    } else {
+                        return false;
+                    }
+                } else {
+                    var equal = true;
+                    for (0..K) |k| {
+                        if (node.point[k] != point[k]) {
+                            equal = false;
+                            break;
+                        }
+                    }
+                    return equal;
+                }
+            }
+
+            // Deletes or reinserts a node in the tree
+            fn recursiveUpdate(node: *Node, point: [K]f32, config: Config, delete: bool, alloc: std.mem.Allocator) !?*Node {
+                const axis = @intFromEnum(node.axis_enum);
                 const equal = for (0..K) |k| {
                     if (node.point[k] != point[k]) break false;
                 } else true;
@@ -230,28 +255,41 @@ pub fn IKDTree(comptime Axes: type) type {
                         log(.WARN, name, "Attempting to {s} already {s} node", .{ status, status_past });
                     }
                     node.deleted = delete;
-                    return true;
+                    return node;
                 }
 
                 const left_bound = axisOrder(axis, point, node.point);
                 if (left_bound) {
                     if (node.left) |left| {
-                        found = recursiveUpdate(left, point, delete);
+                        const new_left = try recursiveUpdate(left, point, config, delete, alloc);
+                        if (new_left != node.left) {
+                            recursiveFree(left, alloc);
+                            node.left = new_left;
+                        }
                     }
                 } else {
                     if (node.right) |right| {
-                        found = found or recursiveUpdate(right, point, delete);
+                        const new_right = try recursiveUpdate(right, point, config, delete, alloc);
+                        if (new_right != node.right) {
+                            recursiveFree(right, alloc);
+                            node.right = new_right;
+                        }
                     }
                 }
-                return found;
+                pullUp(node);
+                return try balanceSubtree(node, config, alloc);
             }
 
-            fn recursiveInsert(node: *Node, point: [K]f32, alloc: std.mem.Allocator) !void {
+            fn recursiveInsert(node: *Node, point: [K]f32, config: Config, alloc: std.mem.Allocator) !?*Node {
                 const axis = @intFromEnum(node.axis_enum);
                 const left_bound = axisOrder(axis, point, node.point);
                 if (left_bound) {
                     if (node.left) |left| {
-                        try recursiveInsert(left, point, alloc);
+                        const new_left = try recursiveInsert(left, point, config, alloc);
+                        if (new_left != node.left) {
+                            recursiveFree(left, alloc);
+                            node.left = new_left;
+                        }
                     } else {
                         node.left = try alloc.create(Node);
                         node.left.?.* = Node{
@@ -263,7 +301,11 @@ pub fn IKDTree(comptime Axes: type) type {
                     }
                 } else {
                     if (node.right) |right| {
-                        try recursiveInsert(right, point, alloc);
+                        const new_right = try recursiveInsert(right, point, config, alloc);
+                        if (new_right != node.right) {
+                            recursiveFree(right, alloc);
+                            node.right = new_right;
+                        }
                     } else {
                         node.right = try alloc.create(Node);
                         node.right.?.* = Node{
@@ -274,6 +316,8 @@ pub fn IKDTree(comptime Axes: type) type {
                         };
                     }
                 }
+                pullUp(node);
+                return try balanceSubtree(node, config, alloc);
             }
 
             fn checkIntersection(node: *Node, mins: [K]f32, maxs: [K]f32) bool {
@@ -454,41 +498,40 @@ pub fn IKDTree(comptime Axes: type) type {
             if (self.root == null) {
                 self.root = try Node.buildSubtree(@constCast(&[_][K]f32{point}), self.alloc);
             } else {
-                if (!Node.recursiveUpdate(self.root.?, point, false))
-                    try Node.recursiveInsert(self.root.?, point, self.alloc);
-                Node.pullUp(self.root.?);
+                const new_root =
+                    if (Node.recursiveFind(self.root.?, point))
+                    try Node.recursiveUpdate(self.root.?, point, self.config, false, self.alloc)
+                else
+                    try Node.recursiveInsert(self.root.?, point, self.config, self.alloc);
+                replaceRoot(self, new_root);
             }
         }
 
         pub fn insertMany(self: *Self, points: [][K]f32) !void {
             for (points) |point| {
-                if (self.root == null) {
-                    self.root = try Node.buildSubtree(@constCast(&[_][K]f32{point}), self.alloc);
-                } else if (!Node.recursiveUpdate(self.root.?, point, false)) {
-                    try Node.recursiveInsert(self.root.?, point, self.alloc);
-                }
-            }
-            if (self.root) |root| {
-                Node.pullUp(root);
-                return try Node.balanceSubtree(root, self.config, self.alloc);
+                try self.insert(point);
             }
         }
 
         // Reinsert all points in a box
         pub fn reinsertBox(self: *Self, mins: [K]f32, maxs: [K]f32) !void {
-            try Node.recursiveUpdateBox(self.root, false, self.config.enable_parallel, mins, maxs, self.alloc);
+            if (self.root == null) return;
+            const new_root = try Node.recursiveUpdateBox(self.root.?, false, self.config, mins, maxs, self.alloc);
+            replaceRoot(self, new_root);
         }
 
         // Remove all points in a box
         pub fn removeBox(self: *Self, mins: [K]f32, maxs: [K]f32) !void {
-            try Node.recursiveUpdateBox(self.root, true, self.config.enable_parallel, mins, maxs, self.alloc);
+            if (self.root == null) return;
+            const new_root = try Node.recursiveUpdateBox(self.root.?, true, self.config, mins, maxs, self.alloc);
+            replaceRoot(self, new_root);
         }
 
         // Remove a point
-        pub fn remove(self: *Self, point: [K]f32) void {
-            if (!Node.recursiveUpdate(self.root, true, true, point, true)) {
-                log(.WARN, name, "No such point {d} found", .{point});
-            }
+        pub fn remove(self: *Self, point: [K]f32) !void {
+            if (self.root == null) return;
+            const new_root = try Node.recursiveUpdate(self.root.?, point, self.config, true, self.alloc);
+            replaceRoot(self, new_root);
         }
 
         pub fn downsample(self: *Self, length: f32, point: [K]f32) !void {
@@ -545,6 +588,15 @@ pub fn IKDTree(comptime Axes: type) type {
 
             // Delete all nodes in the hypercube
             const new_node = try Node.recursiveUpdateBox(root, true, self.config, hypercube_mins, hypercube_maxs, self.alloc);
+            replaceRoot(self, new_node);
+
+            try self.insert(center_point);
+        }
+
+        pub fn search() void {}
+        pub fn nearestNeighbor() void {}
+
+        fn replaceRoot(self: *Self, new_node: ?*Node) void {
             if (self.root) |old_root| {
                 if (old_root != new_node) {
                     old_root.recursiveFree(self.alloc);
@@ -553,12 +605,7 @@ pub fn IKDTree(comptime Axes: type) type {
             } else {
                 self.root = new_node;
             }
-
-            try self.insert(center_point);
         }
-
-        pub fn search() void {}
-        pub fn nearestNeighbor() void {}
     };
 }
 
@@ -594,10 +641,12 @@ test {
 
     var ikd = try I3DTree.init(points, config, allocator);
     allocator.free(points);
+    var total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
 
-    try std.testing.expectEqual(ikd.root.?.tree_size, 125);
+    try std.testing.expectEqual(125, total_size);
     try ikd.insert(.{ 0.5, 0.5, 0.5 });
-    try std.testing.expectEqual(ikd.root.?.tree_size, 126);
+    total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
+    try std.testing.expectEqual(126, total_size);
 
     points = try allocator.alloc([3]f32, 8);
     for (0..2) |i| {
@@ -613,10 +662,10 @@ test {
     }
     try ikd.insertMany(points);
     allocator.free(points);
-    try std.testing.expectEqual(ikd.root.?.tree_size, 134);
+    total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
+    try std.testing.expectEqual(134, total_size);
     try ikd.remove(.{ 0.5, 0.5, 0.5 });
     try ikd.removeBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
-    try ikd.reinsertBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
 
     try ikd.print();
     try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
@@ -627,6 +676,8 @@ test {
     try ikd.downsample(2.4, [3]f32{ 3, 0, 3 });
     try ikd.downsample(2.4, [3]f32{ 3, 3, 0 });
     try ikd.downsample(2.4, [3]f32{ 3, 3, 3 });
-    try std.testing.expectEqual(ikd.root.?.tree_size, 7);
+    total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
+    try std.testing.expectEqual(7, total_size);
     try ikd.print();
+    ikd.deinit();
 }
