@@ -6,7 +6,7 @@ const IKDTree = @import("IKDTree.zig").IKDTree;
 const Slam = @This();
 
 const name = "SLAM";
-const I3DTree = IKDTree(Dimensions);
+const I3DTree = IKDTree(3);
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
 var kf: KalmanFilter = undefined;
@@ -26,12 +26,6 @@ pub fn stop() void {
     log(.INFO, name, "Stopping", .{});
     rs_depth.stop_loop();
 }
-
-pub const Dimensions = enum(u8) {
-    X,
-    Y,
-    Z,
-};
 
 pub fn init(config: Config) !void {
     log(.INFO, name, "Initializing", .{});

@@ -20,6 +20,7 @@ const default_ikd_tree = .{
     .a_del = 0.5,
     .enable_parallel = false,
     .max_size_single_thread_rebuild = 1,
+    .relative_tolrance = 0.00001,
 };
 
 const default_slam = .{
