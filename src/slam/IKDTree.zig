@@ -2,9 +2,10 @@ const std = @import("std");
 const log = @import("logger").log;
 
 // Based on https://arxiv.org/pdf/2102.10808
-// TODO: Section III.C.4 onwards
-
+// TODO: Parallel portion
+//
 // TODO: Error handling
+// TODO: OPTIMIZE!!!!! A fucking array with 1,000,000 points is 50x faster than an IKD with 1,000,000 nodes
 
 // Hypothesis: Due to the many creates and destroys
 // the IKDTree pairs best with FixedBufferAllocator
