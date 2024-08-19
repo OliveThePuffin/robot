@@ -5,7 +5,7 @@ const log = @import("logger").log;
 // TODO: Parallel portion
 //
 // TODO: Error handling
-// TODO: OPTIMIZE!!!!! A fucking array with 1,000,000 points is 50x faster than an IKD with 1,000,000 nodes
+// TODO: OPTIMIZE!!!!!
 
 // Hypothesis: Due to the many creates and destroys
 // the IKDTree pairs best with FixedBufferAllocator
@@ -191,7 +191,7 @@ pub fn IKDTree(comptime K: usize) type {
                         max_range_axis = k;
                     }
                 }
-                std.mem.sort(Point, Vec, max_range_axis, axisOrder);
+                std.mem.sortUnstable(Point, Vec, max_range_axis, axisOrder);
 
                 const node = try alloc.create(Node);
 
@@ -536,7 +536,6 @@ pub fn IKDTree(comptime K: usize) type {
                 else
                     try Node.recursiveInsert(self.root.?, point, self.config, self.alloc);
                 replaceRoot(self, new_root);
-                Node.pullUp(self.root.?);
             }
         }
 
@@ -708,6 +707,7 @@ test {
     try ikd.downsample(2.4, [3]f32{ 3, 0, 3 });
     try ikd.downsample(2.4, [3]f32{ 3, 3, 0 });
     try ikd.downsample(2.4, [3]f32{ 3, 3, 3 });
+    ikd.root.?.pullUp();
     total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
     try std.testing.expectEqual(7, total_size);
     try std.testing.expect(ikd.root.?.findInSubtree(.{ 1.2, 1.2, 3.6 }, 0.00001, false));
