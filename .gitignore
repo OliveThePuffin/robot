@@ -1,2 +1,4 @@
 zig-out/
 .zig-cache/
+perf.data
+perf.data.old

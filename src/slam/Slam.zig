@@ -29,40 +29,37 @@ pub fn stop() void {
 
 pub fn init(config: Config) !void {
     log(.INFO, name, "Initializing", .{});
+    var rand_default_prng = std.Random.DefaultPrng.init(0);
+    const rand = rand_default_prng.random();
 
-    var points = try allocator.alloc([3]f32, 200 * 200 * 200);
-    for (0..200) |i| {
-        for (0..200) |j| {
-            for (0..200) |k| {
-                points[i * 200 * 200 + j * 200 + k] = .{
-                    @as(f32, @floatFromInt(i)) / 40,
-                    @as(f32, @floatFromInt(j)) / 40,
-                    @as(f32, @floatFromInt(k)) / 40,
-                };
-            }
-        }
+    const dim = 100000;
+    var points = try allocator.alloc([3]f32, dim);
+    for (0..dim) |k| {
+        points[k] = .{
+            @round(rand.float(f32) * 500) / 100,
+            @round(rand.float(f32) * 500) / 100,
+            @round(rand.float(f32) * 500) / 100,
+        };
     }
 
     // Making a fixed buffer allocator makes the ikd tree much faster
-    var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer aa.deinit();
+    const buffer = try allocator.alloc(u8, 1 * try std.math.powi(usize, 2, 30));
+    defer allocator.free(buffer);
+    var fba = std.heap.FixedBufferAllocator.init(buffer);
 
-    const ikd = try I3DTree.init(points, config.ikd_tree, aa.allocator());
-    defer allocator.free(points);
-    _ = ikd;
+    var timer = std.time.Timer.start() catch unreachable;
+    var ikd = try I3DTree.init(points, config.ikd_tree, fba.allocator());
+    log(.DEBUG, name, "IKD tree init time {}", .{std.fmt.fmtDuration(timer.lap())});
 
-    //const closest_ikd = ikd.nearest(.{ 0.5, 0.5, 0.5 }).?;
-    //log(.INFO, name, "Closest IKD: {}, {}, {}", .{ closest_ikd[0], closest_ikd[1], closest_ikd[2] });
+    allocator.free(points);
+    defer ikd.deinit();
+    //try ikd.print();
 
-    //var closest_arr: [3]f32 = .{ 0, 0, 0 };
-    //for (points) |p| {
-    //    const d1 = (p[0] - closest_arr[0]) * (p[0] - closest_arr[0]) + (p[1] - closest_arr[1]) * (p[1] - closest_arr[1]) + (p[2] - closest_arr[2]) * (p[2] - closest_arr[2]);
-    //    const d2 = (p[0] - 0.5) * (p[0] - 0.5) + (p[1] - 0.5) * (p[1] - 0.5) + (p[2] - 0.5) * (p[2] - 0.5);
-    //    if (d1 < d2) {
-    //        closest_arr = p;
-    //    }
-    //}
-    //log(.INFO, name, "Closest Array: {}, {}, {}", .{ closest_arr[0], closest_arr[1], closest_arr[2] });
+    const query_point: [3]f32 = .{ 3, 3, 3 };
+    _ = timer.lap();
+    const closest_ikd = ikd.nearest(query_point).?;
+    log(.DEBUG, name, "IKD tree nnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
+    log(.INFO, name, "Closest point to {d}: {d}", .{ query_point, closest_ikd });
 
     //kf = try KalmanFilter.init(
     //    config.kalman_filter,
@@ -74,6 +71,7 @@ pub fn init(config: Config) !void {
     //    [2][2]f32{ .{ 500, 0 }, .{ 0, 500 } }, // P
     //    [2][2]f32{ .{ 9.765625e-6, 7.8125e-3 }, .{ 7.8125e-3, 6.25e-2 } }, // Q
     //);
+    //defer kf.deinit();
 
     //const x = try kf.iterate(
     //    [1]f32{6.43}, // z
@@ -84,10 +82,7 @@ pub fn init(config: Config) !void {
     //    null, // G
     //    null, // Q
     //);
-
     //log(.INFO, name, "x_1: {d}", .{x});
-    //kf.deinit();
-    //ikd.deinit();
 
     rs_depth.module_config = .{ .dry_run = config.dry_run };
 }
