@@ -35,48 +35,40 @@ pub fn IKDTree(comptime K: usize) type {
             minimums: Point = undefined,
             maximums: Point = undefined,
 
-            fn recursiveNearestNeighbor(node: ?*Node, point: Point, include_deleted: bool) ?*Node {
-                if (node == null or (node.?.tree_deleted and !include_deleted)) return null;
-                const axis = node.?.axis;
+            pub const NnResult = struct {
+                point: Point,
+                distance: f32,
+            };
+            fn recursiveNearestNeighbor(node: ?*Node, point: Point, include_deleted: bool, result: *NnResult) void {
+                if (node == null or (node.?.tree_deleted and !include_deleted)) return;
 
-                const order = axisOrder(axis, node.?.point, point);
-                const next = if (order) node.?.left else node.?.right;
-                const other = if (order) node.?.right else node.?.left;
-
-                var temp = recursiveNearestNeighbor(next, point, include_deleted);
-                var best = closestNeighbor(temp, node, point, include_deleted);
-
-                const best_distance = if (best) |b| distanceSqared(b.point, point) else std.math.inf(f32);
-                const edge_dist = node.?.point[axis] - point[axis];
-
-                if (edge_dist * edge_dist <= best_distance) {
-                    temp = recursiveNearestNeighbor(other, point, include_deleted);
-                    best = closestNeighbor(temp, best, point, include_deleted);
+                const dist = if (node.?.deleted and !include_deleted) std.math.inf(f32) else distanceSquared(node.?.point, point);
+                if (dist < result.distance) {
+                    result.distance = dist;
+                    result.point = node.?.point;
                 }
-                return best;
+
+                const axis = node.?.axis;
+                const dir = point[axis] < node.?.point[axis];
+                recursiveNearestNeighbor(
+                    if (dir) node.?.left else node.?.right,
+                    point,
+                    include_deleted,
+                    result,
+                );
+
+                const diff = point[axis] - node.?.point[axis];
+                if ((diff * diff) < result.distance) {
+                    recursiveNearestNeighbor(
+                        if (dir) node.?.right else node.?.left,
+                        point,
+                        include_deleted,
+                        result,
+                    );
+                }
             }
 
-            fn closestNeighbor(n1: ?*Node, n2: ?*Node, point: Point, include_deleted: bool) ?*Node {
-                const n1_dist = if (n1) |node|
-                    if (node.deleted and !include_deleted)
-                        std.math.inf(f32)
-                    else
-                        distanceSqared(node.point, point)
-                else
-                    std.math.inf(f32);
-
-                const n2_dist = if (n2) |node|
-                    if (node.deleted and !include_deleted)
-                        std.math.inf(f32)
-                    else
-                        distanceSqared(node.point, point)
-                else
-                    std.math.inf(f32);
-
-                return if (n1_dist <= n2_dist) n1 else n2;
-            }
-
-            fn distanceSqared(p1: Point, p2: Point) f32 {
+            fn distanceSquared(p1: Point, p2: Point) f32 {
                 var sum: f32 = 0;
                 inline for (0..K) |k| {
                     sum += (p1[k] - p2[k]) * (p1[k] - p2[k]);
@@ -251,9 +243,10 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             fn findInSubtree(node: *Node, point: Point, tolerance: f32, include_deleted: bool) bool {
-                const nearest_point = (recursiveNearestNeighbor(node, point, include_deleted) orelse return false).point;
+                var nearest_result = NnResult{ .point = [_]f32{std.math.inf(f32)} ** K, .distance = std.math.inf(f32) };
+                recursiveNearestNeighbor(node, point, include_deleted, &nearest_result);
                 inline for (0..K) |k| {
-                    if (!std.math.approxEqRel(f32, nearest_point[k], point[k], tolerance)) {
+                    if (!std.math.approxEqRel(f32, nearest_result.point[k], point[k], tolerance)) {
                         return false;
                     }
                 }
@@ -602,15 +595,17 @@ pub fn IKDTree(comptime K: usize) type {
             inline for (0..K) |k| {
                 center[k] += length / 2.0;
             }
-            const center_node = Node.recursiveNearestNeighbor(hypercube_tree, center, false);
-            if (center_node) |cn| {
-                try self.insert(cn.point);
+            var center_result = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
+            Node.recursiveNearestNeighbor(hypercube_tree, center, false, &center_result);
+            if (center_result.distance < std.math.inf(f32)) {
+                try self.insert(center_result.point);
             }
         }
 
         pub fn nearest(self: *Self, point: Point) ?Point {
-            const nearest_node = Node.recursiveNearestNeighbor(self.root, point, false);
-            return if (nearest_node) |n| n.point else null;
+            var nearest_result = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
+            Node.recursiveNearestNeighbor(self.root, point, false, &nearest_result);
+            return if (nearest_result.distance < std.math.inf(f32)) nearest_result.point else null;
         }
 
         fn replaceRoot(self: *Self, new_node: ?*Node) void {
