@@ -5,10 +5,9 @@ const log = @import("logger").log;
 // TODO: Parallel portion
 //
 // TODO: Error handling
-// TODO: OPTIMIZE!!!!!
 
-// Hypothesis: Due to the many creates and destroys
-// the IKDTree pairs best with FixedBufferAllocator
+/// Massive credit to @Travis from the zig discord for helping with optimizations!
+/// Search functions are heavily adapted from https://github.com/travisstaloch/kd-tree
 pub fn IKDTree(comptime K: usize) type {
     return struct {
         const Self = @This();
@@ -32,17 +31,61 @@ pub fn IKDTree(comptime K: usize) type {
             invalid_num: usize = 0,
             deleted: bool = false,
             tree_deleted: bool = false,
-            minimums: Point = undefined,
-            maximums: Point = undefined,
+            minimums: Point,
+            maximums: Point,
 
             pub const NnResult = struct {
                 point: Point,
                 distance: f32,
             };
-            fn recursiveNearestNeighbor(node: ?*Node, point: Point, include_deleted: bool, result: *NnResult) void {
+            const KnnQueue = struct {
+                storage: std.ArrayListUnmanaged(NnResult) = .{},
+                alloc: std.mem.Allocator,
+                bound: usize,
+
+                fn init(alloc: std.mem.Allocator, bound: usize) KnnQueue {
+                    std.debug.assert(bound > 0);
+                    return .{ .alloc = alloc, .bound = bound };
+                }
+
+                pub fn push(self: *KnnQueue, result: NnResult) !void {
+                    const index = std.sort.lowerBound(
+                        NnResult,
+                        result,
+                        self.storage.items,
+                        void{},
+                        nnResultCompare,
+                    );
+                    try self.storage.insert(self.alloc, index, result);
+                    if (self.storage.items.len > self.bound) {
+                        self.storage.items.len -= 1;
+                        std.debug.assert(self.storage.items.len == self.bound);
+                    }
+                }
+
+                pub fn count(self: KnnQueue) usize {
+                    return self.storage.items.len;
+                }
+                pub fn last(self: KnnQueue) NnResult {
+                    std.debug.assert(self.storage.items.len > 0);
+                    return self.storage.items[self.storage.items.len - 1];
+                }
+                pub fn deinit(self: *KnnQueue) void {
+                    self.storage.deinit(self.alloc);
+                }
+
+                fn nnResultCompare(_: void, a: Node.NnResult, b: Node.NnResult) bool {
+                    return a.distance < b.distance;
+                }
+            };
+
+            fn nnSearch(node: ?*Node, point: Point, include_deleted: bool, result: *NnResult) void {
                 if (node == null or (node.?.tree_deleted and !include_deleted)) return;
 
-                const dist = if (node.?.deleted and !include_deleted) std.math.inf(f32) else distanceSquared(node.?.point, point);
+                const dist = if (node.?.deleted and !include_deleted)
+                    std.math.inf(f32)
+                else
+                    distanceSquared(node.?.point, point);
                 if (dist < result.distance) {
                     result.distance = dist;
                     result.point = node.?.point;
@@ -50,7 +93,7 @@ pub fn IKDTree(comptime K: usize) type {
 
                 const axis = node.?.axis;
                 const dir = point[axis] < node.?.point[axis];
-                recursiveNearestNeighbor(
+                nnSearch(
                     if (dir) node.?.left else node.?.right,
                     point,
                     include_deleted,
@@ -59,10 +102,44 @@ pub fn IKDTree(comptime K: usize) type {
 
                 const diff = point[axis] - node.?.point[axis];
                 if ((diff * diff) < result.distance) {
-                    recursiveNearestNeighbor(
+                    nnSearch(
                         if (dir) node.?.right else node.?.left,
                         point,
                         include_deleted,
+                        result,
+                    );
+                }
+            }
+
+            fn knnSearch(node: ?*Node, point: Point, include_deleted: bool, k: usize, result: *KnnQueue) !void {
+                if (node == null or (node.?.tree_deleted and !include_deleted)) return;
+
+                const dist = if (node.?.deleted and !include_deleted)
+                    std.math.inf(f32)
+                else
+                    distanceSquared(node.?.point, point);
+                try result.push(.{
+                    .point = node.?.point,
+                    .distance = dist,
+                });
+
+                const axis = node.?.axis;
+                const dir = point[axis] < node.?.point[axis];
+                try knnSearch(
+                    if (dir) node.?.left else node.?.right,
+                    point,
+                    include_deleted,
+                    k,
+                    result,
+                );
+
+                const diff = point[axis] - node.?.point[axis];
+                if (result.count() < k or (diff * diff) < result.last().distance) {
+                    try knnSearch(
+                        if (dir) node.?.right else node.?.left,
+                        point,
+                        include_deleted,
+                        k,
                         result,
                     );
                 }
@@ -243,10 +320,13 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             fn findInSubtree(node: *Node, point: Point, tolerance: f32, include_deleted: bool) bool {
-                var nearest_result = NnResult{ .point = [_]f32{std.math.inf(f32)} ** K, .distance = std.math.inf(f32) };
-                recursiveNearestNeighbor(node, point, include_deleted, &nearest_result);
+                var nearest = NnResult{
+                    .point = [_]f32{std.math.inf(f32)} ** K,
+                    .distance = std.math.inf(f32),
+                };
+                nnSearch(node, point, include_deleted, &nearest);
                 inline for (0..K) |k| {
-                    if (!std.math.approxEqRel(f32, nearest_result.point[k], point[k], tolerance)) {
+                    if (!std.math.approxEqRel(f32, nearest.point[k], point[k], tolerance)) {
                         return false;
                     }
                 }
@@ -254,7 +334,13 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             // Deletes or reinserts a node in the tree
-            fn recursiveUpdate(node: *Node, point: Point, config: Config, delete: bool, alloc: std.mem.Allocator) !?*Node {
+            fn recursiveUpdate(
+                node: *Node,
+                point: Point,
+                config: Config,
+                delete: bool,
+                alloc: std.mem.Allocator,
+            ) !?*Node {
                 const equal = inline for (0..K) |k| {
                     if (node.point[k] != point[k]) break false;
                 } else true;
@@ -406,7 +492,14 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             // Deletes or reinserts nodes in the tree
-            fn recursiveUpdateBox(node: *Node, delete: bool, config: Config, mins: Point, maxs: Point, alloc: std.mem.Allocator) !?*Node {
+            fn recursiveUpdateBox(
+                node: *Node,
+                delete: bool,
+                config: Config,
+                mins: Point,
+                maxs: Point,
+                alloc: std.mem.Allocator,
+            ) !?*Node {
                 // if the node range is outside the box, return
                 if (!checkIntersection(node, mins, maxs))
                     return node;
@@ -588,7 +681,14 @@ pub fn IKDTree(comptime K: usize) type {
             defer hypercube_tree.recursiveFree(self.alloc);
 
             // Delete all nodes in the hypercube
-            const new_node = try Node.recursiveUpdateBox(root, true, self.config, hypercube_mins, hypercube_maxs, self.alloc);
+            const new_node = try Node.recursiveUpdateBox(
+                root,
+                true,
+                self.config,
+                hypercube_mins,
+                hypercube_maxs,
+                self.alloc,
+            );
             replaceRoot(self, new_node);
 
             var center = hypercube_mins;
@@ -596,16 +696,31 @@ pub fn IKDTree(comptime K: usize) type {
                 center[k] += length / 2.0;
             }
             var center_result = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
-            Node.recursiveNearestNeighbor(hypercube_tree, center, false, &center_result);
+            Node.nnSearch(hypercube_tree, center, false, &center_result);
             if (center_result.distance < std.math.inf(f32)) {
                 try self.insert(center_result.point);
             }
         }
 
-        pub fn nearest(self: *Self, point: Point) ?Point {
-            var nearest_result = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
-            Node.recursiveNearestNeighbor(self.root, point, false, &nearest_result);
-            return if (nearest_result.distance < std.math.inf(f32)) nearest_result.point else null;
+        pub fn nearestNeighbor(self: *Self, point: Point) ?Point {
+            var nearest = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
+            Node.nnSearch(self.root, point, false, &nearest);
+            return if (nearest.distance < std.math.inf(f32)) nearest.point else null;
+        }
+
+        pub fn kNearestNeighbors(self: *Self, point: Point, k: usize) ![]Point {
+            var queue = Node.KnnQueue.init(self.alloc, k);
+            defer queue.deinit();
+
+            try Node.knnSearch(self.root, point, false, k, &queue);
+
+            const num_items = @min(k, queue.count());
+            var points = try self.alloc.alloc(Point, num_items);
+
+            for (0..num_items) |queue_idx| {
+                points[queue_idx] = queue.storage.items[queue_idx].point;
+            }
+            return points;
         }
 
         fn replaceRoot(self: *Self, new_node: ?*Node) void {
@@ -753,12 +868,11 @@ test {
     try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 1.2, 3.6 }, 0.00001, false));
     try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 3.6, 1.2 }, 0.00001, false));
     try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 3.6, 3.6 }, 0.00001, false));
-    //try std.testing.expectEqual(ikd.nearest(.{ 1, 2, 3 }).?, .{ 1.2, 1.2, 3.6 }, 0.00001);
-    var point = ikd.nearest(.{ 1, 2, 3 }).?;
+    var point = ikd.nearestNeighbor(.{ 1, 2, 3 }).?;
     try std.testing.expectApproxEqRel(point[0], 1.2, 0.00001);
     try std.testing.expectApproxEqRel(point[1], 1.2, 0.00001);
     try std.testing.expectApproxEqRel(point[2], 3.6, 0.00001);
-    point = ikd.nearest(.{ 4, 4, 4 }).?;
+    point = ikd.nearestNeighbor(.{ 4, 4, 4 }).?;
     try std.testing.expectApproxEqRel(point[0], 3.6, 0.00001);
     try std.testing.expectApproxEqRel(point[1], 3.6, 0.00001);
     try std.testing.expectApproxEqRel(point[2], 3.6, 0.00001);

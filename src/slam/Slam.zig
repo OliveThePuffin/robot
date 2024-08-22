@@ -57,9 +57,17 @@ pub fn init(config: Config) !void {
 
     const query_point: [3]f32 = .{ 3, 3, 3 };
     _ = timer.lap();
-    const closest_ikd = ikd.nearest(query_point).?;
+    const nearest = ikd.nearestNeighbor(query_point).?;
     log(.DEBUG, name, "IKD tree nnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
-    log(.INFO, name, "Closest point to {d}: {d}", .{ query_point, closest_ikd });
+    log(.INFO, name, "Closest point to {d}: {d}", .{ query_point, nearest });
+
+    _ = timer.lap();
+    const knearest = try ikd.kNearestNeighbors(query_point, 5);
+    log(.DEBUG, name, "IKD tree knnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
+    log(.INFO, name, "Closest points to {d}:", .{query_point});
+    for (knearest) |k| {
+        log(.INFO, name, "  {d}", .{k});
+    }
 
     //kf = try KalmanFilter.init(
     //    config.kalman_filter,
