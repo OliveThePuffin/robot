@@ -53,7 +53,7 @@ pub fn init(config: Config) !void {
 
     allocator.free(points);
     defer ikd.deinit();
-    //try ikd.print();
+    //ikd.print();
 
     const query_point: [3]f32 = .{ 3, 3, 3 };
     _ = timer.lap();

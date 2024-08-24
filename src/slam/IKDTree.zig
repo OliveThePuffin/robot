@@ -6,12 +6,17 @@ const log = @import("logger").log;
 //
 // TODO: Error handling
 
+pub const IKDTreeError = error{
+    OutOfMemory,
+};
+
 /// Massive credit to @Travis from the zig discord for helping with optimizations!
 /// Search functions are heavily adapted from https://github.com/travisstaloch/kd-tree
 pub fn IKDTree(comptime K: usize) type {
     return struct {
         const Self = @This();
         const Point = [K]f32;
+        const NodePool = std.heap.MemoryPool(Node);
         const name = "IKDTree";
         pub const Config = struct {
             a_bal: f32,
@@ -19,6 +24,21 @@ pub fn IKDTree(comptime K: usize) type {
             enable_parallel: bool,
             max_size_single_thread_rebuild: usize,
             relative_tolrance: f32,
+        };
+
+        const Box = struct {
+            minimums: Point,
+            maximums: Point,
+        };
+
+        const Operation = union(enum) {
+            insert: Point,
+            insert_many: []Point,
+            reinsert: Point,
+            reinsert_box: Box,
+            remove: Point,
+            remove_box: Box,
+            downsample: struct { length: f32, point: Point },
         };
 
         const Node = struct {
@@ -31,8 +51,7 @@ pub fn IKDTree(comptime K: usize) type {
             invalid_num: usize = 0,
             deleted: bool = false,
             tree_deleted: bool = false,
-            minimums: Point,
-            maximums: Point,
+            range: Box,
 
             pub const NnResult = struct {
                 point: Point,
@@ -153,13 +172,44 @@ pub fn IKDTree(comptime K: usize) type {
                 return sum;
             }
 
+            // Returns a list of nodes within the box
+            fn boxSearch(node: *Node, mins: Point, maxs: Point, alloc: std.mem.Allocator) ![]*Node {
+                var results = std.ArrayList(*Node).init(alloc);
+                // if the node range is outside the box, return
+                if (!checkIntersection(node, mins, maxs)) {
+                    return results.toOwnedSlice();
+                }
+                // if the node range is a subset of the box, flatten the subtree and append it
+                if (checkSubset(node, mins, maxs)) {
+                    const nodes = try node.flatten(alloc);
+                    defer alloc.free(nodes);
+                    try results.appendSlice(nodes);
+                    return try results.toOwnedSlice();
+                }
+                // if the node is contained in the box, append it
+                if (checkContained(node, mins, maxs) and !node.deleted) {
+                    try results.append(node);
+                }
+                if (node.left) |left| {
+                    const left_nodes = try left.boxSearch(mins, maxs, alloc);
+                    defer alloc.free(left_nodes);
+                    try results.appendSlice(left_nodes);
+                }
+                if (node.right) |right| {
+                    const right_nodes = try right.boxSearch(mins, maxs, alloc);
+                    defer alloc.free(right_nodes);
+                    try results.appendSlice(right_nodes);
+                }
+                return try results.toOwnedSlice();
+            }
+
             // Pulls up (Calculates) info from below the subtree
             // tree_size, invalid_num, range
             fn pullUp(node: *Node) void {
                 // Base cases
                 inline for (0..K) |k| {
-                    node.minimums[k] = node.point[k];
-                    node.maximums[k] = node.point[k];
+                    node.range.minimums[k] = node.point[k];
+                    node.range.maximums[k] = node.point[k];
                 }
                 node.tree_size = 1;
                 node.invalid_num = @intFromBool(node.deleted);
@@ -177,16 +227,16 @@ pub fn IKDTree(comptime K: usize) type {
                     node.tree_size += left.tree_size;
                     node.invalid_num += if (node.tree_deleted) left.tree_size else left.invalid_num;
                     inline for (0..K) |k| {
-                        node.minimums[k] = @min(node.minimums[k], left.minimums[k]);
-                        node.maximums[k] = @max(node.maximums[k], left.maximums[k]);
+                        node.range.minimums[k] = @min(node.range.minimums[k], left.range.minimums[k]);
+                        node.range.maximums[k] = @max(node.range.maximums[k], left.range.maximums[k]);
                     }
                 }
                 if (node.right) |right| {
                     node.tree_size += right.tree_size;
                     node.invalid_num += if (node.tree_deleted) right.tree_size else right.invalid_num;
                     inline for (0..K) |k| {
-                        node.minimums[k] = @min(node.minimums[k], right.minimums[k]);
-                        node.maximums[k] = @max(node.maximums[k], right.maximums[k]);
+                        node.range.minimums[k] = @min(node.range.minimums[k], right.range.minimums[k]);
+                        node.range.maximums[k] = @max(node.range.maximums[k], right.range.maximums[k]);
                     }
                 }
             }
@@ -217,7 +267,7 @@ pub fn IKDTree(comptime K: usize) type {
                 }
             }
 
-            fn buildSubtree(Vec: []Point, alloc: std.mem.Allocator) !?*Node {
+            fn buildSubtree(Vec: []Point, pool: *NodePool) !?*Node {
                 if (Vec.len == 0) {
                     return null;
                 }
@@ -247,35 +297,39 @@ pub fn IKDTree(comptime K: usize) type {
 
                 const median = select(Vec, mid_index, max_range_axis);
 
-                const node = try alloc.create(Node);
+                const node = pool.create() catch |err| {
+                    log(.ERROR, name, "Failed to create node: {}", .{err});
+                    return IKDTreeError.OutOfMemory;
+                };
 
                 node.* = Node{
                     .point = median,
                     .axis = max_range_axis,
-                    .left = try buildSubtree(Vec[0..low_size], alloc),
-                    .right = try buildSubtree(Vec[high_index..], alloc),
-
+                    .left = try buildSubtree(Vec[0..low_size], pool),
+                    .right = try buildSubtree(Vec[high_index..], pool),
                     .tree_size = Vec.len,
-                    .minimums = mins,
-                    .maximums = maxs,
+                    .range = .{
+                        .minimums = mins,
+                        .maximums = maxs,
+                    },
                 };
                 return node;
             }
 
-            fn rebuildSubtree(node: *Node, alloc: std.mem.Allocator) !?*Node {
-                const nodes = try node.flatten(alloc);
-                defer alloc.free(nodes);
+            fn rebuildSubtree(node: *Node, ikd_tree: *Self) !?*Node {
+                const nodes = try node.flatten(ikd_tree.alloc);
+                defer ikd_tree.alloc.free(nodes);
 
                 // get only points from the nodes
-                var points: []Point = try alloc.alloc(Point, nodes.len);
-                defer alloc.free(points);
+                var points: []Point = try ikd_tree.alloc.alloc(Point, nodes.len);
+                defer ikd_tree.alloc.free(points);
                 for (nodes, 0..) |n, h| {
                     points[h] = n.point;
                 }
-                return try Node.buildSubtree(points, alloc);
+                return try Node.buildSubtree(points, &ikd_tree.pool);
             }
 
-            fn rebuildSubtreeParallel(node: *Node, alloc: std.mem.Allocator) !?*Node {
+            fn rebuildSubtreeParallel(node: *Node, ikd_tree: *Self) !?*Node {
                 // TODO: implement the following
                 // LockUpdates(node);
                 // This makes insert, reinsert, and delete not accessible
@@ -284,6 +338,10 @@ pub fn IKDTree(comptime K: usize) type {
                 // Flatten(node);
                 //
                 // UnlockUpdates(node);
+                ikd_tree.mutex_update.lock();
+                const points = try node.flatten(ikd_tree.alloc);
+                defer ikd_tree.alloc.free(points);
+                ikd_tree.mutex_update.unlock();
                 // After unlock, all incremental updates are suspended and recorded
                 // in an operation logger
                 //
@@ -296,27 +354,17 @@ pub fn IKDTree(comptime K: usize) type {
                 // node = new_node;
                 // UnlockAll(node);
                 // free(node_temp);
-
-                const nodes = try node.flatten(alloc);
-                defer alloc.free(nodes);
-
-                // get only points from the nodes
-                var points: []Point = try alloc.alloc(Point, nodes.len);
-                defer alloc.free(points);
-                for (nodes, 0..) |n, h| {
-                    points[h] = n.point;
-                }
-                return try Node.buildSubtree(points, alloc);
+                return try rebuildSubtree(node, ikd_tree);
             }
 
-            fn recursiveFree(node: *Node, alloc: std.mem.Allocator) void {
+            fn recursiveFree(node: *Node, pool: *NodePool) void {
                 if (node.left) |left| {
-                    recursiveFree(left, alloc);
+                    recursiveFree(left, pool);
                 }
                 if (node.right) |right| {
-                    recursiveFree(right, alloc);
+                    recursiveFree(right, pool);
                 }
-                alloc.destroy(node);
+                pool.destroy(node);
             }
 
             fn findInSubtree(node: *Node, point: Point, tolerance: f32, include_deleted: bool) bool {
@@ -334,13 +382,7 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             // Deletes or reinserts a node in the tree
-            fn recursiveUpdate(
-                node: *Node,
-                point: Point,
-                config: Config,
-                delete: bool,
-                alloc: std.mem.Allocator,
-            ) !?*Node {
+            fn recursiveUpdate(node: *Node, ikd_tree: *Self, point: Point, delete: bool) ?*Node {
                 const equal = inline for (0..K) |k| {
                     if (node.point[k] != point[k]) break false;
                 } else true;
@@ -353,72 +395,81 @@ pub fn IKDTree(comptime K: usize) type {
                     node.deleted = delete;
                     return node;
                 }
-
-                const left_bound = axisOrder(node.axis, point, node.point);
+                const left_bound = point[node.axis] < node.point[node.axis];
                 if (left_bound) {
                     if (node.left) |left| {
-                        const new_left = try recursiveUpdate(left, point, config, delete, alloc);
+                        const new_left = recursiveUpdate(left, ikd_tree, point, delete);
                         if (new_left != node.left) {
-                            recursiveFree(left, alloc);
+                            recursiveFree(left, &ikd_tree.pool);
                             node.left = new_left;
                         }
                     }
                 } else {
                     if (node.right) |right| {
-                        const new_right = try recursiveUpdate(right, point, config, delete, alloc);
+                        const new_right = recursiveUpdate(right, ikd_tree, point, delete);
                         if (new_right != node.right) {
-                            recursiveFree(right, alloc);
+                            recursiveFree(right, &ikd_tree.pool);
                             node.right = new_right;
                         }
                     }
                 }
                 pullUp(node);
-                return try balanceSubtree(node, config, alloc);
+                return balanceSubtree(node, ikd_tree);
             }
 
-            fn recursiveInsert(node: *Node, point: Point, config: Config, alloc: std.mem.Allocator) !?*Node {
-                const left_bound = axisOrder(node.axis, point, node.point);
+            fn recursiveInsert(node: *Node, ikd_tree: *Self, point: Point) ?*Node {
+                const left_bound = point[node.axis] < node.point[node.axis];
                 if (left_bound) {
                     if (node.left) |left| {
-                        const new_left = try recursiveInsert(left, point, config, alloc);
+                        const new_left = recursiveInsert(left, ikd_tree, point);
                         if (new_left != node.left) {
-                            recursiveFree(left, alloc);
+                            recursiveFree(left, &ikd_tree.pool);
                             node.left = new_left;
                         }
                     } else {
-                        node.left = try alloc.create(Node);
+                        node.left = ikd_tree.pool.create() catch |err| {
+                            log(.ERROR, name, "Failed to create node at {d}: {s}", .{ point, @errorName(err) });
+                            return node;
+                        };
                         node.left.?.* = Node{
                             .point = point,
                             .axis = node.axis,
                             .left = null,
                             .right = null,
+                            // this will be defined by pullUp()
+                            .range = undefined,
                         };
                     }
                 } else {
                     if (node.right) |right| {
-                        const new_right = try recursiveInsert(right, point, config, alloc);
+                        const new_right = recursiveInsert(right, ikd_tree, point);
                         if (new_right != node.right) {
-                            recursiveFree(right, alloc);
+                            recursiveFree(right, &ikd_tree.pool);
                             node.right = new_right;
                         }
                     } else {
-                        node.right = try alloc.create(Node);
+                        node.right = ikd_tree.pool.create() catch |err| {
+                            log(.ERROR, name, "Failed to create node at {d}: {s}", .{ point, @errorName(err) });
+                            return node;
+                        };
                         node.right.?.* = Node{
                             .point = point,
                             .axis = node.axis,
                             .left = null,
                             .right = null,
+                            // this will be defined by pullUp()
+                            .range = undefined,
                         };
                     }
                 }
                 pullUp(node);
-                return try balanceSubtree(node, config, alloc);
+                return balanceSubtree(node, ikd_tree);
             }
 
             fn checkIntersection(node: *Node, mins: Point, maxs: Point) bool {
                 var intersect = true;
                 inline for (0..K) |k| {
-                    intersect = intersect and (node.minimums[k] <= maxs[k] and node.maximums[k] >= mins[k]);
+                    intersect = intersect and (node.range.minimums[k] <= maxs[k] and node.range.maximums[k] >= mins[k]);
                 }
                 return intersect;
             }
@@ -426,7 +477,7 @@ pub fn IKDTree(comptime K: usize) type {
             fn checkSubset(node: *Node, mins: Point, maxs: Point) bool {
                 var subset = true;
                 inline for (0..K) |k| {
-                    subset = subset and (node.minimums[k] >= mins[k] and node.maximums[k] <= maxs[k]);
+                    subset = subset and (node.range.minimums[k] >= mins[k] and node.range.maximums[k] <= maxs[k]);
                 }
                 return subset;
             }
@@ -460,46 +511,8 @@ pub fn IKDTree(comptime K: usize) type {
                 return try nodes.toOwnedSlice();
             }
 
-            // Returns a list of nodes within the box
-            fn recursiveSearchBox(node: *Node, mins: Point, maxs: Point, alloc: std.mem.Allocator) ![]*Node {
-                var results = std.ArrayList(*Node).init(alloc);
-                // if the node range is outside the box, return
-                if (!checkIntersection(node, mins, maxs)) {
-                    return results.toOwnedSlice();
-                }
-                // if the node range is a subset of the box, flatten the subtree and append it
-                if (checkSubset(node, mins, maxs)) {
-                    const nodes = try node.flatten(alloc);
-                    defer alloc.free(nodes);
-                    try results.appendSlice(nodes);
-                    return try results.toOwnedSlice();
-                }
-                // if the node is contained in the box, append it
-                if (checkContained(node, mins, maxs) and !node.deleted) {
-                    try results.append(node);
-                }
-                if (node.left) |left| {
-                    const left_nodes = try left.recursiveSearchBox(mins, maxs, alloc);
-                    defer alloc.free(left_nodes);
-                    try results.appendSlice(left_nodes);
-                }
-                if (node.right) |right| {
-                    const right_nodes = try right.recursiveSearchBox(mins, maxs, alloc);
-                    defer alloc.free(right_nodes);
-                    try results.appendSlice(right_nodes);
-                }
-                return try results.toOwnedSlice();
-            }
-
             // Deletes or reinserts nodes in the tree
-            fn recursiveUpdateBox(
-                node: *Node,
-                delete: bool,
-                config: Config,
-                mins: Point,
-                maxs: Point,
-                alloc: std.mem.Allocator,
-            ) !?*Node {
+            fn recursiveUpdateBox(node: *Node, ikd_tree: *Self, delete: bool, mins: Point, maxs: Point) ?*Node {
                 // if the node range is outside the box, return
                 if (!checkIntersection(node, mins, maxs))
                     return node;
@@ -512,36 +525,32 @@ pub fn IKDTree(comptime K: usize) type {
                         node.deleted = delete;
                     }
                     if (node.left) |left| {
-                        const new_left = try recursiveUpdateBox(left, delete, config, mins, maxs, alloc);
+                        const new_left = recursiveUpdateBox(left, ikd_tree, delete, mins, maxs);
                         if (new_left != node.left) {
-                            recursiveFree(left, alloc);
+                            recursiveFree(left, &ikd_tree.pool);
                             node.left = new_left;
                         }
                     }
                     if (node.right) |right| {
-                        const new_right = try recursiveUpdateBox(right, delete, config, mins, maxs, alloc);
+                        const new_right = recursiveUpdateBox(right, ikd_tree, delete, mins, maxs);
                         if (new_right != node.right) {
-                            recursiveFree(right, alloc);
+                            recursiveFree(right, &ikd_tree.pool);
                             node.right = new_right;
                         }
                     }
                 }
                 pullUp(node);
-                return try balanceSubtree(node, config, alloc);
+                return balanceSubtree(node, ikd_tree);
             }
 
-            fn axisOrder(axis_id: usize, lhs: Point, rhs: Point) bool {
-                return (lhs[axis_id] < rhs[axis_id]);
-            }
-
-            fn balanceSubtree(node: *Node, config: Config, alloc: std.mem.Allocator) !?*Node {
+            fn balanceSubtree(node: *Node, ikd_tree: *Self) ?*Node {
                 // The lower these values are, the more likely it is that the tree will be rebalanced
                 // α_bal ∈ (0.5, 1)
                 //const a_bal = 0.7;
-                const a_bal = config.a_bal;
+                const a_bal = ikd_tree.config.a_bal;
                 // α_del ∈ (0, 1)
                 //const a_del = 0.5;
-                const a_del = config.a_del;
+                const a_del = ikd_tree.config.a_del;
 
                 const treesize = @as(f32, @floatFromInt(node.tree_size));
                 const treesize_left = @as(f32, @floatFromInt(if (node.left) |left| left.tree_size else 0));
@@ -552,15 +561,20 @@ pub fn IKDTree(comptime K: usize) type {
                 const balanced_right = treesize_right < a_bal * (treesize - 1);
                 const low_invalid = num_invalid < a_del * treesize;
 
-                // TODO: finish me (rebuild to balance)
-                //if (node.tree_size < n_max or !enable_parallel) {
-                //      rebuildTree(node);
-                //    } else {
-                //        ThreadSpawn(ParallelRebuild, node);
-                //    }
-                //}
                 if (!balanced_left or !balanced_right or !low_invalid) {
-                    return try rebuildSubtree(node, alloc);
+                    if (node.tree_size < ikd_tree.config.max_size_single_thread_rebuild or
+                        !ikd_tree.config.enable_parallel)
+                    {
+                        return rebuildSubtree(node, ikd_tree) catch |err| {
+                            log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
+                            return node;
+                        };
+                    } else {
+                        return rebuildSubtreeParallel(node, ikd_tree) catch |err| {
+                            log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
+                            return node;
+                        };
+                    }
                 }
                 return node;
             }
@@ -569,73 +583,151 @@ pub fn IKDTree(comptime K: usize) type {
         root: ?*Node,
         config: Config,
         alloc: std.mem.Allocator,
+        pool: NodePool,
+        mutex_update: std.Thread.Mutex,
+        mutex_query: std.Thread.Mutex,
 
         pub fn init(Vec: []Point, config: Config, alloc: std.mem.Allocator) !Self {
+            var pool = NodePool.init(alloc);
             return .{
-                .root = try Node.buildSubtree(Vec, alloc),
+                .root = try Node.buildSubtree(Vec, &pool),
                 .alloc = alloc,
                 .config = config,
+                .pool = pool,
+                .mutex_update = std.Thread.Mutex{},
+                .mutex_query = std.Thread.Mutex{},
             };
         }
         pub fn deinit(self: *Self) void {
-            // recursively free the tree
-            if (self.root) |root| {
-                root.recursiveFree(self.alloc);
-            }
+            // free the tree
+            self.pool.deinit();
         }
 
-        pub fn print(self: *Self) !void {
+        pub fn print(self: *Self) void {
             if (self.root) |root| {
                 log(.DEBUG, name, "Tree Size: {d}", .{root.tree_size});
                 log(.DEBUG, name, "Num Deleted: {d}", .{root.invalid_num});
             } else {
                 log(.DEBUG, name, "NULL Root", .{});
             }
-            try Node.printSubtree(self.root, "", false);
+            Node.printSubtree(self.root, "", false) catch |err| {
+                log(.ERROR, name, "Error printing subtree: {}", .{err});
+            };
         }
 
         pub fn insert(self: *Self, point: Point) !void {
+            try doOperation(self, .{ .insert = point });
+        }
+
+        pub fn insertMany(self: *Self, points: []Point) !void {
+            try doOperation(self, .{ .insert_many = points });
+        }
+
+        // Reinsert a point
+        pub fn reinsert(self: *Self, point: Point) void {
+            doOperation(self, .{ .reinsert = point }) catch unreachable;
+        }
+
+        // Reinsert all points in a box
+        pub fn reinsertBox(self: *Self, mins: Point, maxs: Point) void {
+            doOperation(self, .{ .reinsert_box = .{ .minimums = mins, .maximums = maxs } }) catch unreachable;
+        }
+
+        // Remove a point
+        pub fn remove(self: *Self, point: Point) void {
+            doOperation(self, .{ .remove = point }) catch unreachable;
+        }
+
+        // Remove all points in a box
+        pub fn removeBox(self: *Self, mins: Point, maxs: Point) void {
+            doOperation(self, .{ .remove_box = .{ .minimums = mins, .maximums = maxs } }) catch unreachable;
+        }
+
+        pub fn downsample(self: *Self, length: f32, point: Point) !void {
+            try doOperation(self, .{ .downsample = .{ .length = length, .point = point } });
+        }
+
+        pub fn nearestNeighbor(self: *Self, point: Point) ?Point {
+            self.mutex_query.lock();
+            defer self.mutex_query.unlock();
+            var nearest = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
+            Node.nnSearch(self.root, point, false, &nearest);
+            return if (nearest.distance < std.math.inf(f32)) nearest.point else null;
+        }
+
+        pub fn kNearestNeighbors(self: *Self, point: Point, k: usize) ![]Point {
+            self.mutex_query.lock();
+            defer self.mutex_query.unlock();
+            var queue = Node.KnnQueue.init(self.alloc, k);
+            defer queue.deinit();
+
+            try Node.knnSearch(self.root, point, false, k, &queue);
+
+            const num_items = @min(k, queue.count());
+            var points = try self.alloc.alloc(Point, num_items);
+
+            for (0..num_items) |queue_idx| {
+                points[queue_idx] = queue.storage.items[queue_idx].point;
+            }
+            return points;
+        }
+
+        fn doOperation(self: *Self, op: Operation) IKDTreeError!void {
+            if (self.mutex_update.tryLock()) {
+                defer self.mutex_update.unlock();
+                switch (op) {
+                    .insert => |point| {
+                        try doInsert(self, point);
+                    },
+                    .insert_many => |points| {
+                        for (points) |point| {
+                            try doInsert(self, point);
+                        }
+                    },
+                    .reinsert => |point| {
+                        if (self.root == null) return;
+                        const new_root = Node.recursiveUpdate(self.root.?, self, point, false);
+                        replaceRoot(self, new_root);
+                    },
+                    .reinsert_box => |box| {
+                        if (self.root == null) return;
+                        const new_root = Node.recursiveUpdateBox(self.root.?, self, false, box.minimums, box.maximums);
+                        replaceRoot(self, new_root);
+                    },
+                    .remove => |point| {
+                        if (self.root == null) return;
+                        const new_root = Node.recursiveUpdate(self.root.?, self, point, true);
+                        replaceRoot(self, new_root);
+                    },
+                    .remove_box => |box| {
+                        if (self.root == null) return;
+                        const new_root = Node.recursiveUpdateBox(self.root.?, self, true, box.minimums, box.maximums);
+                        replaceRoot(self, new_root);
+                    },
+                    .downsample => |d| {
+                        try doDownsample(self, d.length, d.point);
+                    },
+                }
+            } else {
+                // TODO: Add to operation logger
+            }
+        }
+
+        fn doInsert(self: *Self, point: Point) !void {
             if (self.root == null) {
-                self.root = try Node.buildSubtree(@constCast(&[_]Point{point}), self.alloc);
+                self.root = try Node.buildSubtree(@constCast(&[_]Point{point}), &self.pool);
             } else {
                 if (Node.findInSubtree(self.root.?, point, self.config.relative_tolrance, true)) {}
                 const new_root =
                     if (Node.findInSubtree(self.root.?, point, self.config.relative_tolrance, true))
-                    try Node.recursiveUpdate(self.root.?, point, self.config, false, self.alloc)
+                    Node.recursiveUpdate(self.root.?, self, point, false)
                 else
-                    try Node.recursiveInsert(self.root.?, point, self.config, self.alloc);
+                    Node.recursiveInsert(self.root.?, self, point);
                 replaceRoot(self, new_root);
             }
         }
 
-        pub fn insertMany(self: *Self, points: []Point) !void {
-            for (points) |point| {
-                try self.insert(point);
-            }
-        }
-
-        // Reinsert all points in a box
-        pub fn reinsertBox(self: *Self, mins: Point, maxs: Point) !void {
-            if (self.root == null) return;
-            const new_root = try Node.recursiveUpdateBox(self.root.?, false, self.config, mins, maxs, self.alloc);
-            replaceRoot(self, new_root);
-        }
-
-        // Remove all points in a box
-        pub fn removeBox(self: *Self, mins: Point, maxs: Point) !void {
-            if (self.root == null) return;
-            const new_root = try Node.recursiveUpdateBox(self.root.?, true, self.config, mins, maxs, self.alloc);
-            replaceRoot(self, new_root);
-        }
-
-        // Remove a point
-        pub fn remove(self: *Self, point: Point) !void {
-            if (self.root == null) return;
-            const new_root = try Node.recursiveUpdate(self.root.?, point, self.config, true, self.alloc);
-            replaceRoot(self, new_root);
-        }
-
-        pub fn downsample(self: *Self, length: f32, point: Point) !void {
+        fn doDownsample(self: *Self, length: f32, point: Point) !void {
             // how many hypercubes fill the space
             if (self.root == null) return;
             const root = self.root.?;
@@ -645,11 +737,11 @@ pub fn IKDTree(comptime K: usize) type {
             // coord of minimum hypercube from origin
             var min_hypercube: Point = undefined;
             inline for (0..K) |k| {
-                min_hypercube[k] = @floor(root.minimums[k] / length);
+                min_hypercube[k] = @floor(root.range.minimums[k] / length);
             }
 
             inline for (0..K) |k| {
-                hypercube_lengths[k] = @intFromFloat(@ceil(root.maximums[k] / length) - min_hypercube[k]);
+                hypercube_lengths[k] = @intFromFloat(@ceil(root.range.maximums[k] / length) - min_hypercube[k]);
                 total_hypercubes *= hypercube_lengths[k];
             }
 
@@ -667,7 +759,7 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             // get all points in the hypercube
-            const hypercube_nodes = try root.recursiveSearchBox(hypercube_mins, hypercube_maxs, self.alloc);
+            const hypercube_nodes = try root.boxSearch(hypercube_mins, hypercube_maxs, self.alloc);
             defer self.alloc.free(hypercube_nodes);
 
             // get only points from the nodes
@@ -677,18 +769,11 @@ pub fn IKDTree(comptime K: usize) type {
                 points[h] = node.point;
             }
 
-            const hypercube_tree = try Node.buildSubtree(points, self.alloc) orelse return;
-            defer hypercube_tree.recursiveFree(self.alloc);
+            const hypercube_tree = try Node.buildSubtree(points, &self.pool) orelse return;
+            defer hypercube_tree.recursiveFree(&self.pool);
 
             // Delete all nodes in the hypercube
-            const new_node = try Node.recursiveUpdateBox(
-                root,
-                true,
-                self.config,
-                hypercube_mins,
-                hypercube_maxs,
-                self.alloc,
-            );
+            const new_node = Node.recursiveUpdateBox(root, self, true, hypercube_mins, hypercube_maxs);
             replaceRoot(self, new_node);
 
             var center = hypercube_mins;
@@ -698,35 +783,14 @@ pub fn IKDTree(comptime K: usize) type {
             var center_result = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
             Node.nnSearch(hypercube_tree, center, false, &center_result);
             if (center_result.distance < std.math.inf(f32)) {
-                try self.insert(center_result.point);
+                try self.doInsert(center_result.point);
             }
-        }
-
-        pub fn nearestNeighbor(self: *Self, point: Point) ?Point {
-            var nearest = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
-            Node.nnSearch(self.root, point, false, &nearest);
-            return if (nearest.distance < std.math.inf(f32)) nearest.point else null;
-        }
-
-        pub fn kNearestNeighbors(self: *Self, point: Point, k: usize) ![]Point {
-            var queue = Node.KnnQueue.init(self.alloc, k);
-            defer queue.deinit();
-
-            try Node.knnSearch(self.root, point, false, k, &queue);
-
-            const num_items = @min(k, queue.count());
-            var points = try self.alloc.alloc(Point, num_items);
-
-            for (0..num_items) |queue_idx| {
-                points[queue_idx] = queue.storage.items[queue_idx].point;
-            }
-            return points;
         }
 
         fn replaceRoot(self: *Self, new_node: ?*Node) void {
             if (self.root) |old_root| {
                 if (old_root != new_node) {
-                    old_root.recursiveFree(self.alloc);
+                    old_root.recursiveFree(&self.pool);
                     self.root = new_node;
                 }
             } else {
@@ -805,7 +869,7 @@ test {
         .a_bal = 0.75,
         .a_del = 0.5,
         .enable_parallel = false,
-        .max_size_single_thread_rebuild = 1,
+        .max_size_single_thread_rebuild = 3000,
         .relative_tolrance = 0.00001,
     };
 
@@ -847,8 +911,8 @@ test {
     allocator.free(points);
     total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
     try std.testing.expectEqual(134, total_size);
-    try ikd.remove(.{ 0.5, 0.5, 0.5 });
-    try ikd.removeBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
+    ikd.remove(.{ 0.5, 0.5, 0.5 });
+    ikd.removeBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
 
     try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
     try ikd.downsample(2.4, [3]f32{ 0, 0, 3 });
@@ -876,6 +940,6 @@ test {
     try std.testing.expectApproxEqRel(point[0], 3.6, 0.00001);
     try std.testing.expectApproxEqRel(point[1], 3.6, 0.00001);
     try std.testing.expectApproxEqRel(point[2], 3.6, 0.00001);
-    try ikd.print();
+    ikd.print();
     ikd.deinit();
 }
