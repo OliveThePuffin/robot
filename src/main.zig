@@ -11,10 +11,7 @@ pub fn main() !void {
 
     // Initialize modules
     try Slam.init(config.slam);
-    defer {
-        // Deinitialize modules
-        Slam.deinit();
-    }
+    defer Slam.deinit();
 
     // Start modules
     Slam.start();

@@ -50,6 +50,7 @@ pub fn init(config: Config) !void {
     var timer = std.time.Timer.start() catch unreachable;
     var ikd = try I3DTree.init(points, config.ikd_tree, fba.allocator());
     log(.DEBUG, name, "IKD tree init time {}", .{std.fmt.fmtDuration(timer.lap())});
+    try ikd.insert(.{ 10, 10, 10 });
 
     allocator.free(points);
     defer ikd.deinit();

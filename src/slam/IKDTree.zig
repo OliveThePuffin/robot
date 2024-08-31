@@ -3,8 +3,7 @@ const log = @import("logger").log;
 
 // Based on https://arxiv.org/pdf/2102.10808
 //
-// TODO: Error handling
-// TODO: testing
+// TODO: Fix parallel rebuild
 
 pub const IKDTreeError = error{
     OutOfMemory,
@@ -318,6 +317,14 @@ pub fn IKDTree(comptime K: usize) type {
                 return node;
             }
 
+            // Whenever this function is called, the rwlock should already be locked
+            // rwlock should also be unlocked by the doOperation that called this
+            //
+            // rwlock came locked. It should leave locked
+            //
+            // TODO: Idea: Instead of calling rebuildSubtree, for every node in the tree that gets updated,
+            // set a flag on a node to tell the code to rebuild the subtree. That will call it much less.
+            // Then recursively go into the tree and rebuild the subtree if that flag is set for each node.
             fn rebuildSubtree(node: *?*Node, ikd_tree: *Self) !void {
                 if (node.* == null) return;
                 const n = node.*.?;
@@ -332,29 +339,49 @@ pub fn IKDTree(comptime K: usize) type {
                     points[i] = ns.point;
                 }
                 const new_node = try Node.buildSubtree(points, &ikd_tree.pool);
-                errdefer recursiveFree(new_node.?, &ikd_tree.pool);
+                errdefer if (new_node) |new| recursiveFree(new, &ikd_tree.pool);
 
                 const old_node = node.*.?.*;
-                ikd_tree.mutex_query.lock();
                 if (new_node) |new| {
                     n.* = new.*;
                 } else {
                     node.* = null;
                 }
-                ikd_tree.mutex_query.unlock();
                 if (old_node.left) |left| recursiveFree(left, &ikd_tree.pool);
                 if (old_node.right) |right| recursiveFree(right, &ikd_tree.pool);
             }
 
+            // Whenever this function is called, the rwlock should already be locked
+            // rwlock should also be unlocked by the doOperation that called this
+            //
+            // rwlock came locked. It should leave locked
             fn rebuildSubtreeParallel(node: *?*Node, ikd_tree: *Self) !void {
                 if (node.* == null) return;
-                const n = node.*.?;
 
-                ikd_tree.mutex_update.lock();
+                ikd_tree.suspend_ops = true;
+
+                // the rest should be parallel
+                const rebuild_thread = std.Thread.spawn(
+                    .{},
+                    rebuildSubtreeParallelThread,
+                    .{ node, ikd_tree },
+                ) catch |err| {
+                    log(.ERROR, name, "Failed to spawn rebuildSubtreeParallelThread: {}", .{err});
+                    ikd_tree.rwlock.unlock();
+                    try rebuildSubtreeParallelThread(node, ikd_tree);
+                    ikd_tree.rwlock.lock();
+                    return;
+                };
+                rebuild_thread.detach();
+            }
+            // TODO: The error when doing this function is that the calling function returns
+            // and the node pointer goes out of scope.
+            fn rebuildSubtreeParallelThread(node: *?*Node, ikd_tree: *Self) !void {
+                const n = node.*.?;
+                ikd_tree.rwlock.lock();
                 const nodes = try n.flatten(ikd_tree.alloc);
                 defer ikd_tree.alloc.free(nodes);
-                ikd_tree.suspend_ops = true;
-                ikd_tree.mutex_update.unlock();
+                ikd_tree.rwlock.unlock();
 
                 var points: []Point = try ikd_tree.alloc.alloc(Point, nodes.len);
                 defer ikd_tree.alloc.free(points);
@@ -364,18 +391,19 @@ pub fn IKDTree(comptime K: usize) type {
                 var new_node = try Node.buildSubtree(points, &ikd_tree.pool);
                 errdefer if (new_node) |new| recursiveFree(new, &ikd_tree.pool);
 
+                ikd_tree.rwlock.lock();
                 while (ikd_tree.operation_queue.popFirst()) |op| {
-                    ikd_tree.mutex_update.unlock();
-                    try ikd_tree.doOperation(&new_node, op.data, false);
+                    try ikd_tree.doOperationSwitch(&new_node, op.data, false);
                     ikd_tree.alloc.destroy(op);
-                    ikd_tree.mutex_update.lock();
                 }
                 const old_node = node.*.?.*;
-                ikd_tree.mutex_query.lock();
-                n.* = new_node.?.*;
+                if (new_node) |new| {
+                    n.* = new.*;
+                } else {
+                    node.* = null;
+                }
                 ikd_tree.suspend_ops = false;
-                ikd_tree.mutex_query.unlock();
-                ikd_tree.mutex_update.unlock();
+                ikd_tree.rwlock.unlock();
                 if (old_node.left) |left| recursiveFree(left, &ikd_tree.pool);
                 if (old_node.right) |right| recursiveFree(right, &ikd_tree.pool);
             }
@@ -405,8 +433,8 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             // Deletes or reinserts a node in the tree
-            fn recursiveUpdate(node: *?*Node, ikd_tree: *Self, point: Point, delete: bool, enable_parallel: bool) IKDTreeError!void {
-                if (node.* == null) return IKDTreeError.NullNode;
+            fn recursiveUpdate(node: *?*Node, ikd_tree: *Self, point: Point, delete: bool, enable_parallel: bool) void {
+                if (node.* == null) unreachable;
 
                 const n = node.*.?;
                 const equal = inline for (0..K) |k| {
@@ -424,25 +452,25 @@ pub fn IKDTree(comptime K: usize) type {
                 const left_bound = point[n.axis] < n.point[n.axis];
                 if (left_bound) {
                     if (n.left) |_| {
-                        recursiveUpdate(&n.left, ikd_tree, point, delete, enable_parallel) catch unreachable;
+                        recursiveUpdate(&n.left, ikd_tree, point, delete, enable_parallel);
                     }
                 } else {
                     if (n.right) |_| {
-                        recursiveUpdate(&n.right, ikd_tree, point, delete, enable_parallel) catch unreachable;
+                        recursiveUpdate(&n.right, ikd_tree, point, delete, enable_parallel);
                     }
                 }
                 pullUp(n);
                 balanceSubtree(node, ikd_tree, enable_parallel);
             }
 
-            fn recursiveInsert(node: *?*Node, ikd_tree: *Self, point: Point, enable_parallel: bool) IKDTreeError!void {
-                if (node.* == null) return IKDTreeError.NullNode;
+            fn recursiveInsert(node: *?*Node, ikd_tree: *Self, point: Point, enable_parallel: bool) void {
+                if (node.* == null) unreachable;
                 const n = node.*.?;
 
                 const left_bound = point[n.axis] < n.point[n.axis];
                 if (left_bound) {
                     if (n.left) |_| {
-                        recursiveInsert(&n.left, ikd_tree, point, enable_parallel) catch unreachable;
+                        recursiveInsert(&n.left, ikd_tree, point, enable_parallel);
                     } else {
                         n.left = ikd_tree.pool.create() catch |err| {
                             log(.ERROR, name, "Failed to create node at {d}: {s}", .{ point, @errorName(err) });
@@ -459,7 +487,7 @@ pub fn IKDTree(comptime K: usize) type {
                     }
                 } else {
                     if (n.right) |_| {
-                        recursiveInsert(&n.right, ikd_tree, point, enable_parallel) catch unreachable;
+                        recursiveInsert(&n.right, ikd_tree, point, enable_parallel);
                     } else {
                         n.right = ikd_tree.pool.create() catch |err| {
                             log(.ERROR, name, "Failed to create node at {d}: {s}", .{ point, @errorName(err) });
@@ -525,8 +553,8 @@ pub fn IKDTree(comptime K: usize) type {
             }
 
             // Deletes or reinserts nodes in the tree
-            fn recursiveUpdateBox(node: *?*Node, ikd_tree: *Self, delete: bool, mins: Point, maxs: Point, enable_parallel: bool) IKDTreeError!void {
-                if (node.* == null) return IKDTreeError.NullNode;
+            fn recursiveUpdateBox(node: *?*Node, ikd_tree: *Self, delete: bool, mins: Point, maxs: Point, enable_parallel: bool) void {
+                if (node.* == null) unreachable;
                 const n = node.*.?;
                 // if the node range is outside the box, return
                 if (!checkIntersection(n, mins, maxs)) return;
@@ -539,10 +567,10 @@ pub fn IKDTree(comptime K: usize) type {
                         n.deleted = delete;
                     }
                     if (n.left) |_| {
-                        recursiveUpdateBox(&n.left, ikd_tree, delete, mins, maxs, enable_parallel) catch unreachable;
+                        recursiveUpdateBox(&n.left, ikd_tree, delete, mins, maxs, enable_parallel);
                     }
                     if (n.right) |_| {
-                        recursiveUpdateBox(&n.right, ikd_tree, delete, mins, maxs, enable_parallel) catch unreachable;
+                        recursiveUpdateBox(&n.right, ikd_tree, delete, mins, maxs, enable_parallel);
                     }
                 }
                 pullUp(n);
@@ -577,7 +605,10 @@ pub fn IKDTree(comptime K: usize) type {
                             log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
                         };
                     } else {
-                        rebuildSubtreeParallel(node, ikd_tree) catch |err| {
+                        //rebuildSubtreeParallel(node, ikd_tree) catch |err| {
+                        //    log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
+                        //};
+                        rebuildSubtree(node, ikd_tree) catch |err| {
                             log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
                         };
                     }
@@ -592,8 +623,7 @@ pub fn IKDTree(comptime K: usize) type {
         suspend_ops: bool,
         operation_queue: OperationQueue,
         last_operation: ?*OperationQueue.Node,
-        mutex_update: std.Thread.Mutex,
-        mutex_query: std.Thread.Mutex,
+        rwlock: std.Thread.RwLock,
 
         pub fn init(Vec: []Point, config: Config, alloc: std.mem.Allocator) !Self {
             var pool = NodePool.init(alloc);
@@ -605,8 +635,7 @@ pub fn IKDTree(comptime K: usize) type {
                 .suspend_ops = false,
                 .operation_queue = OperationQueue{},
                 .last_operation = null,
-                .mutex_update = std.Thread.Mutex{},
-                .mutex_query = std.Thread.Mutex{},
+                .rwlock = std.Thread.RwLock{},
             };
         }
         pub fn deinit(self: *Self) void {
@@ -626,6 +655,17 @@ pub fn IKDTree(comptime K: usize) type {
             };
         }
 
+        pub fn count(self: *Self) usize {
+            self.rwlock.lockShared();
+            defer self.rwlock.unlockShared();
+            if (self.root) |root| {
+                root.pullUp();
+                return root.tree_size - root.invalid_num;
+            } else {
+                return 0;
+            }
+        }
+
         pub fn insert(self: *Self, point: Point) !void {
             try doOperation(self, &self.root, .{ .insert = point }, true);
         }
@@ -635,23 +675,25 @@ pub fn IKDTree(comptime K: usize) type {
         }
 
         // Reinsert a point
-        pub fn reinsert(self: *Self, point: Point) !void {
-            try doOperation(self, &self.root, .{ .reinsert = point }, true);
+        pub fn reinsert(self: *Self, point: Point) void {
+            doOperation(self, &self.root, .{ .reinsert = point }, true) catch unreachable;
         }
 
         // Reinsert all points in a box
-        pub fn reinsertBox(self: *Self, mins: Point, maxs: Point) !void {
-            try doOperation(self, &self.root, .{ .reinsert_box = .{ .minimums = mins, .maximums = maxs } }, true);
+        pub fn reinsertBox(self: *Self, mins: Point, maxs: Point) void {
+            doOperation(self, &self.root, .{ .reinsert_box = .{ .minimums = mins, .maximums = maxs } }, true) catch
+                unreachable;
         }
 
         // Remove a point
         pub fn remove(self: *Self, point: Point) !void {
-            try doOperation(self, &self.root, .{ .remove = point }, true);
+            doOperation(self, &self.root, .{ .remove = point }, true) catch unreachable;
         }
 
         // Remove all points in a box
-        pub fn removeBox(self: *Self, mins: Point, maxs: Point) !void {
-            try doOperation(self, &self.root, .{ .remove_box = .{ .minimums = mins, .maximums = maxs } }, true);
+        pub fn removeBox(self: *Self, mins: Point, maxs: Point) void {
+            doOperation(self, &self.root, .{ .remove_box = .{ .minimums = mins, .maximums = maxs } }, true) catch
+                unreachable;
         }
 
         pub fn downsample(self: *Self, length: f32, point: Point) !void {
@@ -659,16 +701,16 @@ pub fn IKDTree(comptime K: usize) type {
         }
 
         pub fn nearestNeighbor(self: *Self, point: Point) ?Point {
-            self.mutex_query.lock();
-            defer self.mutex_query.unlock();
+            self.rwlock.lockShared();
+            defer self.rwlock.unlockShared();
             var nearest = Node.NnResult{ .point = undefined, .distance = std.math.inf(f32) };
             Node.nnSearch(self.root, point, false, &nearest);
             return if (nearest.distance < std.math.inf(f32)) nearest.point else null;
         }
 
         pub fn kNearestNeighbors(self: *Self, point: Point, k: usize) ![]Point {
-            self.mutex_query.lock();
-            defer self.mutex_query.unlock();
+            self.rwlock.lockShared();
+            defer self.rwlock.unlockShared();
             var queue = Node.KnnQueue.init(self.alloc, k);
             defer queue.deinit();
 
@@ -684,8 +726,8 @@ pub fn IKDTree(comptime K: usize) type {
         }
 
         fn doOperation(self: *Self, root: *?*Node, op: Operation, enable_parallel: bool) IKDTreeError!void {
-            self.mutex_update.lock();
-            defer self.mutex_update.unlock();
+            self.rwlock.lock();
+            defer self.rwlock.unlock();
 
             if (self.suspend_ops) {
                 const node = self.alloc.create(OperationQueue.Node) catch |err| {
@@ -701,33 +743,37 @@ pub fn IKDTree(comptime K: usize) type {
                 self.last_operation = node;
                 return;
             }
-            // else
+            try doOperationSwitch(self, root, op, enable_parallel);
+        }
+
+        fn doOperationSwitch(self: *Self, root: *?*Node, op: Operation, enable_parallel: bool) IKDTreeError!void {
             switch (op) {
                 .insert => |point| {
                     try doInsert(self, root, point, enable_parallel);
                 },
                 .insert_many => |points| {
                     for (points) |point| {
-                        try doInsert(self, root, point, enable_parallel);
+                        try doInsert(self, &self.root, point, enable_parallel);
                     }
                 },
                 .reinsert => |point| {
                     if (root.* == null) return;
-                    try Node.recursiveUpdate(root, self, point, false, enable_parallel);
+                    Node.recursiveUpdate(root, self, point, false, enable_parallel);
                 },
                 .reinsert_box => |box| {
                     if (root.* == null) return;
-                    try Node.recursiveUpdateBox(root, self, false, box.minimums, box.maximums, enable_parallel);
+                    Node.recursiveUpdateBox(root, self, false, box.minimums, box.maximums, enable_parallel);
                 },
                 .remove => |point| {
                     if (root.* == null) return;
-                    try Node.recursiveUpdate(root, self, point, true, enable_parallel);
+                    Node.recursiveUpdate(root, self, point, true, enable_parallel);
                 },
                 .remove_box => |box| {
                     if (root.* == null) return;
-                    try Node.recursiveUpdateBox(root, self, true, box.minimums, box.maximums, enable_parallel);
+                    Node.recursiveUpdateBox(root, self, true, box.minimums, box.maximums, enable_parallel);
                 },
                 .downsample => |d| {
+                    if (root.* == null) return;
                     try doDownsample(self, root, d.length, d.point, enable_parallel);
                 },
             }
@@ -740,16 +786,16 @@ pub fn IKDTree(comptime K: usize) type {
                 const rn = root.*.?;
                 if (Node.findInSubtree(rn, point, self.config.relative_tolrance, true)) {}
                 if (Node.findInSubtree(rn, point, self.config.relative_tolrance, true)) {
-                    try Node.recursiveUpdate(root, self, point, false, enable_parallel);
+                    Node.recursiveUpdate(root, self, point, false, enable_parallel);
                 } else {
-                    try Node.recursiveInsert(root, self, point, enable_parallel);
+                    Node.recursiveInsert(root, self, point, enable_parallel);
                 }
             }
         }
 
         fn doDownsample(self: *Self, root: *?*Node, length: f32, point: Point, enable_parallel: bool) !void {
             // how many hypercubes fill the space
-            if (root.* == null) return IKDTreeError.NullNode;
+            if (root.* == null) unreachable;
             const rn = root.*.?;
             var hypercube_lengths: [K]usize = undefined;
             var total_hypercubes: usize = 1;
@@ -793,7 +839,7 @@ pub fn IKDTree(comptime K: usize) type {
             defer hypercube_tree.recursiveFree(&self.pool);
 
             // Delete all nodes in the hypercube
-            try Node.recursiveUpdateBox(root, self, true, hypercube_mins, hypercube_maxs, enable_parallel);
+            Node.recursiveUpdateBox(root, self, true, hypercube_mins, hypercube_maxs, enable_parallel);
 
             var center = hypercube_mins;
             inline for (0..K) |k| {
@@ -883,17 +929,22 @@ pub fn IKDTree(comptime K: usize) type {
     };
 }
 
-test {
+/////////////
+// TESTING //
+/////////////
+
+test "Build" {
     @import("logger").logLevelSet(.NONE);
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
+    const tol = 0.0001;
 
     const config = I3DTree.Config{
         .a_bal = 0.75,
         .a_del = 0.5,
         .enable_parallel = false,
         .max_size_single_thread_rebuild = 3000,
-        .relative_tolrance = 0.00001,
+        .relative_tolrance = tol,
     };
 
     var points = try allocator.alloc([3]f32, 5 * 5 * 5);
@@ -910,59 +961,830 @@ test {
     }
 
     var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
     allocator.free(points);
-    var total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
 
-    try std.testing.expectEqual(125, total_size);
-    try ikd.insert(.{ 0.5, 0.5, 0.5 });
-    total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
-    try std.testing.expectEqual(126, total_size);
+    try std.testing.expectEqual(125, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+}
 
-    points = try allocator.alloc([3]f32, 8);
-    for (0..2) |i| {
-        for (0..2) |j| {
-            for (0..2) |k| {
-                points[i * 4 + j * 2 + k] = .{
-                    @as(f32, @floatFromInt(i)) * 2.4 + 1.2,
-                    @as(f32, @floatFromInt(j)) * 2.4 + 1.2,
-                    @as(f32, @floatFromInt(k)) * 2.4 + 1.2,
+test "SingleThreadedInsert" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
                 };
             }
         }
     }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    try ikd.insert(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(126, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(.{ 0.5, 0.5, 0.5 }, tol, false));
+
+    try ikd_empty.insert(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(1, ikd_empty.count());
+    try std.testing.expect(ikd_empty.root.?.findInSubtree(.{ 0.5, 0.5, 0.5 }, tol, false));
+}
+
+test "SingleThreadedInsertMany" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd.deinit();
+
+    try std.testing.expectEqual(0, ikd.count());
     try ikd.insertMany(points);
     allocator.free(points);
-    total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
-    try std.testing.expectEqual(134, total_size);
-    try ikd.remove(.{ 0.5, 0.5, 0.5 });
-    try ikd.removeBox(.{ 0, 0, 0 }, .{ 2.4, 2.4, 2.4 });
 
-    try ikd.downsample(2.4, [3]f32{ 0, 0, 0 });
-    try ikd.downsample(2.4, [3]f32{ 0, 0, 3 });
-    try ikd.downsample(2.4, [3]f32{ 0, 3, 0 });
-    try ikd.downsample(2.4, [3]f32{ 0, 3, 3 });
-    try ikd.downsample(2.4, [3]f32{ 3, 0, 0 });
-    try ikd.downsample(2.4, [3]f32{ 3, 0, 3 });
-    try ikd.downsample(2.4, [3]f32{ 3, 3, 0 });
-    try ikd.downsample(2.4, [3]f32{ 3, 3, 3 });
-    ikd.root.?.pullUp();
-    total_size = ikd.root.?.tree_size - ikd.root.?.invalid_num;
-    try std.testing.expectEqual(7, total_size);
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1.2, 1.2, 3.6 }, 0.00001, false));
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1.2, 3.6, 1.2 }, 0.00001, false));
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1.2, 3.6, 3.6 }, 0.00001, false));
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 1.2, 1.2 }, 0.00001, false));
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 1.2, 3.6 }, 0.00001, false));
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 3.6, 1.2 }, 0.00001, false));
-    try std.testing.expect(ikd.root.?.findInSubtree(.{ 3.6, 3.6, 3.6 }, 0.00001, false));
-    var point = ikd.nearestNeighbor(.{ 1, 2, 3 }).?;
-    try std.testing.expectApproxEqRel(point[0], 1.2, 0.00001);
-    try std.testing.expectApproxEqRel(point[1], 1.2, 0.00001);
-    try std.testing.expectApproxEqRel(point[2], 3.6, 0.00001);
-    point = ikd.nearestNeighbor(.{ 4, 4, 4 }).?;
-    try std.testing.expectApproxEqRel(point[0], 3.6, 0.00001);
-    try std.testing.expectApproxEqRel(point[1], 3.6, 0.00001);
-    try std.testing.expectApproxEqRel(point[2], 3.6, 0.00001);
-    ikd.print();
-    ikd.deinit();
+    try std.testing.expectEqual(125, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+}
+
+test "SingleThreadedRemove" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    try ikd.remove(.{ 0.5, 0.5, 0.5 });
+    try ikd.remove(.{ 0, 0, 0 });
+    try std.testing.expectEqual(124, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i == 0 and j == 0 and k == 0) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    try ikd_empty.remove(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(0, ikd_empty.count());
+}
+
+test "SingleThreadedBoxRemove" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    ikd.removeBox(.{ 0.5, 0.5, 0.5 }, .{ 3.5, 3.5, 3.5 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd.removeBox(.{ 1.5, 1.5, 1.5 }, .{ 2.5, 2.5, 2.5 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd.removeBox(.{ 15, 15, 15 }, .{ 2.5, 2.5, 2.5 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd.removeBox(.{ 15, 15, 15 }, .{ 25, 25, 25 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd_empty.removeBox(.{ 0.5, 0.5, 0.5 }, .{ 3.5, 3.5, 3.5 });
+    try std.testing.expectEqual(0, ikd_empty.count());
+}
+
+test "SingleThreadedReinsert" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 1,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    try std.testing.expectEqual(125, ikd.count());
+    const root_point = ikd.root.?.point;
+    try ikd.remove(root_point);
+    try std.testing.expectEqual(124, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == false);
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, true) == true);
+    ikd.reinsert(root_point);
+    try std.testing.expectEqual(125, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == true);
+}
+
+test "SingleThreadedReinsertBox" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 1,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    try std.testing.expectEqual(125, ikd.count());
+    const root_point = ikd.root.?.point;
+    try ikd.remove(root_point);
+    try std.testing.expectEqual(124, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == false);
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, true) == true);
+    ikd.reinsertBox(.{ 15, 15, 15 }, .{ 35, 35, 35 });
+    try std.testing.expectEqual(124, ikd.count());
+    ikd.reinsertBox(.{
+        root_point[0] - 1,
+        root_point[1] - 1,
+        root_point[2] - 1,
+    }, .{
+        root_point[0] + 1,
+        root_point[1] + 1,
+        root_point[2] + 1,
+    });
+    try std.testing.expectEqual(125, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == true);
+}
+
+test "SingleThreadedDownsample" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = false,
+        .max_size_single_thread_rebuild = 3000,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    try ikd.downsample(2, .{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(99, ikd.count());
+    for (3..5) |i| {
+        for (3..5) |j| {
+            for (3..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1, 1, 1 }, tol, false));
+    try ikd.downsample(0.25, .{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(99, ikd.count());
+    for (3..5) |i| {
+        for (3..5) |j| {
+            for (3..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1, 1, 1 }, tol, false));
+}
+
+test "MultiThreadedInsert" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    try ikd.insert(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(126, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(.{ 0.5, 0.5, 0.5 }, tol, false));
+
+    try ikd_empty.insert(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(1, ikd_empty.count());
+    try std.testing.expect(ikd_empty.root.?.findInSubtree(.{ 0.5, 0.5, 0.5 }, tol, false));
+}
+
+test "MultiThreadedInsertMany" {
+    @import("logger").logLevelSet(.NONE);
+
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd.deinit();
+
+    try std.testing.expectEqual(0, ikd.count());
+    try ikd.insertMany(points);
+    allocator.free(points);
+
+    try std.testing.expectEqual(125, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+}
+
+test "MultiThreadedRemove" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    try ikd.remove(.{ 0.5, 0.5, 0.5 });
+    try ikd.remove(.{ 0, 0, 0 });
+    try std.testing.expectEqual(124, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i == 0 and j == 0 and k == 0) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    try ikd_empty.remove(.{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(0, ikd_empty.count());
+}
+
+test "MultiThreadedBoxRemove" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    ikd.removeBox(.{ 0.5, 0.5, 0.5 }, .{ 3.5, 3.5, 3.5 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd.removeBox(.{ 1.5, 1.5, 1.5 }, .{ 2.5, 2.5, 2.5 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd.removeBox(.{ 15, 15, 15 }, .{ 2.5, 2.5, 2.5 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd.removeBox(.{ 15, 15, 15 }, .{ 25, 25, 25 });
+    try std.testing.expectEqual(98, ikd.count());
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                if (i > 0 and j > 0 and k > 0 and i < 4 and j < 4 and k < 4) continue;
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+
+    ikd_empty.removeBox(.{ 0.5, 0.5, 0.5 }, .{ 3.5, 3.5, 3.5 });
+    try std.testing.expectEqual(0, ikd_empty.count());
+}
+
+test "MultiThreadedReinsert" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 1,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    try std.testing.expectEqual(125, ikd.count());
+    const root_point = ikd.root.?.point;
+    try ikd.remove(root_point);
+    try std.testing.expectEqual(124, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == false);
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, true) == true);
+    ikd.reinsert(root_point);
+    try std.testing.expectEqual(125, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == true);
+}
+
+test "MultiThreadedReinsertBox" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 1,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    try std.testing.expectEqual(125, ikd.count());
+    const root_point = ikd.root.?.point;
+    try ikd.remove(root_point);
+    try std.testing.expectEqual(124, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == false);
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, true) == true);
+    ikd.reinsertBox(.{ 15, 15, 15 }, .{ 35, 35, 35 });
+    try std.testing.expectEqual(124, ikd.count());
+    ikd.reinsertBox(.{
+        root_point[0] - 1,
+        root_point[1] - 1,
+        root_point[2] - 1,
+    }, .{
+        root_point[0] + 1,
+        root_point[1] + 1,
+        root_point[2] + 1,
+    });
+    try std.testing.expectEqual(125, ikd.count());
+    try std.testing.expect(ikd.root.?.findInSubtree(root_point, tol, false) == true);
+}
+
+test "MultiThreadedDownsample" {
+    @import("logger").logLevelSet(.NONE);
+    const I3DTree = IKDTree(3);
+    const allocator = std.testing.allocator;
+    const tol = 0.0001;
+
+    const config = I3DTree.Config{
+        .a_bal = 0.75,
+        .a_del = 0.5,
+        .enable_parallel = true,
+        .max_size_single_thread_rebuild = 1,
+        .relative_tolrance = tol,
+    };
+
+    var points = try allocator.alloc([3]f32, 5 * 5 * 5);
+    for (0..5) |i| {
+        for (0..5) |j| {
+            for (0..5) |k| {
+                points[i * 5 * 5 + j * 5 + k] = .{
+                    @as(f32, @floatFromInt(i)),
+                    @as(f32, @floatFromInt(j)),
+                    @as(f32, @floatFromInt(k)),
+                };
+            }
+        }
+    }
+
+    var ikd = try I3DTree.init(points, config, allocator);
+    defer ikd.deinit();
+    allocator.free(points);
+
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    defer ikd_empty.deinit();
+
+    try std.testing.expectEqual(125, ikd.count());
+    try ikd.downsample(2, .{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(99, ikd.count());
+    for (3..5) |i| {
+        for (3..5) |j| {
+            for (3..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1, 1, 1 }, tol, false));
+    try ikd.downsample(0.25, .{ 0.5, 0.5, 0.5 });
+    try std.testing.expectEqual(99, ikd.count());
+    for (3..5) |i| {
+        for (3..5) |j| {
+            for (3..5) |k| {
+                try std.testing.expect(ikd.root.?.findInSubtree(.{
+                    @floatFromInt(i),
+                    @floatFromInt(j),
+                    @floatFromInt(k),
+                }, tol, false));
+            }
+        }
+    }
+    try std.testing.expect(ikd.root.?.findInSubtree(.{ 1, 1, 1 }, tol, false));
 }
