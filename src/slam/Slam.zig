@@ -1,34 +1,40 @@
 const std = @import("std");
-const log = @import("logger").log;
-const rs_depth = @import("rs-depth.zig");
+const Log = @import("Log").Log;
+const LogConfig = @import("Log").Config;
+const RSDepth = @import("rs-depth.zig").RealsenseDepth;
+const RSConfig = @import("rs-depth.zig").Config;
 const KalmanFilter = @import("KalmanFilter.zig").KalmanFilter(2, 1, 1);
 const IKDTree = @import("IKDTree.zig").IKDTree;
 const Slam = @This();
 
-const name = "SLAM";
 const I3DTree = IKDTree(3);
+var log: Log = undefined;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
 var kf: KalmanFilter = undefined;
+var rs_depth: RSDepth = undefined;
 
 pub const Config = struct {
-    dry_run: bool,
+    log_config: LogConfig,
     kalman_filter: KalmanFilter.Config,
     ikd_tree: I3DTree.Config,
+    rs_config: RSConfig,
 };
 
 pub fn start() void {
-    log(.INFO, name, "Starting", .{});
+    log.info("Starting", .{});
     rs_depth.start_loop();
 }
 
 pub fn stop() void {
-    log(.INFO, name, "Stopping", .{});
+    log.info("Stopping", .{});
     rs_depth.stop_loop();
 }
 
 pub fn init(config: Config) !void {
-    log(.INFO, name, "Initializing", .{});
+    log = try Log.init(config.log_config);
+    log.info("Initializing", .{});
+
     var rand_default_prng = std.Random.DefaultPrng.init(0);
     const rand = rand_default_prng.random();
 
@@ -48,8 +54,8 @@ pub fn init(config: Config) !void {
     var fba = std.heap.FixedBufferAllocator.init(buffer);
 
     var timer = std.time.Timer.start() catch unreachable;
-    var ikd = try I3DTree.init(points, config.ikd_tree, fba.allocator());
-    log(.DEBUG, name, "IKD tree init time {}", .{std.fmt.fmtDuration(timer.lap())});
+    var ikd = try I3DTree.init(points, config.ikd_tree, fba.allocator(), &log);
+    log.debug("IKD tree init time {}", .{std.fmt.fmtDuration(timer.lap())});
     try ikd.insert(.{ 10, 10, 10 });
 
     allocator.free(points);
@@ -59,15 +65,15 @@ pub fn init(config: Config) !void {
     const query_point: [3]f32 = .{ 3, 3, 3 };
     _ = timer.lap();
     const nearest = ikd.nearestNeighbor(query_point).?;
-    log(.DEBUG, name, "IKD tree nnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
-    log(.INFO, name, "Closest point to {d}: {d}", .{ query_point, nearest });
+    log.debug("IKD tree nnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
+    log.info("Closest point to {d}: {d}", .{ query_point, nearest });
 
     _ = timer.lap();
     const knearest = try ikd.kNearestNeighbors(query_point, 5);
-    log(.DEBUG, name, "IKD tree knnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
-    log(.INFO, name, "Closest points to {d}:", .{query_point});
+    log.debug("IKD tree knnSearch time {}", .{std.fmt.fmtDuration(timer.lap())});
+    log.info("Closest points to {d}:", .{query_point});
     for (knearest) |k| {
-        log(.INFO, name, "  {d}", .{k});
+        log.info("  {d}", .{k});
     }
 
     //kf = try KalmanFilter.init(
@@ -93,14 +99,17 @@ pub fn init(config: Config) !void {
     //);
     //log(.INFO, name, "x_1: {d}", .{x});
 
-    rs_depth.module_config = .{ .dry_run = config.dry_run };
+    rs_depth = try RSDepth.init(config.rs_config);
 }
 
 pub fn deinit() void {
-    log(.INFO, name, "Deinitializing", .{});
+    rs_depth.deinit();
+
+    log.info("Deinitializing", .{});
+    log.deinit();
 
     if (gpa.deinit() == .leak) {
-        log(.ERROR, name, "Memory leaks detected", .{});
+        log.err("Memory leaks detected", .{});
     }
 }
 

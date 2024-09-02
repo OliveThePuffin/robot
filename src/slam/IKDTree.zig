@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = @import("logger").log;
+const Log = @import("Log").Log;
 
 // Based on https://arxiv.org/pdf/2102.10808
 //
@@ -18,7 +18,6 @@ pub fn IKDTree(comptime K: usize) type {
         const Point = [K]f32;
         const NodePool = std.heap.MemoryPool(Node);
         const OperationQueue = std.SinglyLinkedList(Operation);
-        const name = "IKDTree";
         pub const Config = struct {
             a_bal: f32,
             a_del: f32,
@@ -242,9 +241,9 @@ pub fn IKDTree(comptime K: usize) type {
                 }
             }
 
-            fn printSubtree(node: ?*Node, prefix: []const u8, isLeft: bool) !void {
+            fn printSubtree(node: ?*Node, prefix: []const u8, isLeft: bool, log: Log) !void {
                 if (node) |n| {
-                    log(.DEBUG, name, "{s}{s} {d}: {}{s}{s}", .{
+                    log.debug("{s}{s} {d}: {}{s}{s}", .{
                         prefix,
                         if (isLeft) "├──" else "└──",
                         n.point,
@@ -264,11 +263,11 @@ pub fn IKDTree(comptime K: usize) type {
                         try right.printSubtree(newPrefix, false);
                     }
                 } else {
-                    log(.DEBUG, name, "Subtree is null", .{});
+                    log.debug("Subtree is null", .{});
                 }
             }
 
-            fn buildSubtree(Vec: []Point, pool: *NodePool) !?*Node {
+            fn buildSubtree(Vec: []Point, pool: *NodePool, log: *Log) !?*Node {
                 if (Vec.len == 0) {
                     return null;
                 }
@@ -299,15 +298,15 @@ pub fn IKDTree(comptime K: usize) type {
                 const median = select(Vec, mid_index, max_range_axis);
 
                 const node = pool.create() catch |err| {
-                    log(.ERROR, name, "Failed to create node: {}", .{err});
+                    log.err("Failed to create node: {}", .{err});
                     return IKDTreeError.OutOfMemory;
                 };
 
                 node.* = Node{
                     .point = median,
                     .axis = max_range_axis,
-                    .left = try buildSubtree(Vec[0..low_size], pool),
-                    .right = try buildSubtree(Vec[high_index..], pool),
+                    .left = try buildSubtree(Vec[0..low_size], pool, log),
+                    .right = try buildSubtree(Vec[high_index..], pool, log),
                     .tree_size = Vec.len,
                     .range = .{
                         .minimums = mins,
@@ -338,8 +337,8 @@ pub fn IKDTree(comptime K: usize) type {
                 for (nodes, 0..) |ns, i| {
                     points[i] = ns.point;
                 }
-                const new_node = try Node.buildSubtree(points, &ikd_tree.pool);
-                errdefer if (new_node) |new| recursiveFree(new, &ikd_tree.pool);
+                const new_node = try Node.buildSubtree(points, &ikd_tree.pool, ikd_tree.log);
+                errdefer if (new_node) |new| recursiveFree(new, &ikd_tree.pool, ikd_tree.log);
 
                 const old_node = node.*.?.*;
                 if (new_node) |new| {
@@ -366,7 +365,7 @@ pub fn IKDTree(comptime K: usize) type {
                     rebuildSubtreeParallelThread,
                     .{ node, ikd_tree },
                 ) catch |err| {
-                    log(.ERROR, name, "Failed to spawn rebuildSubtreeParallelThread: {}", .{err});
+                    ikd_tree.log.err("Failed to spawn rebuildSubtreeParallelThread: {}", .{err});
                     ikd_tree.rwlock.unlock();
                     try rebuildSubtreeParallelThread(node, ikd_tree);
                     ikd_tree.rwlock.lock();
@@ -444,7 +443,7 @@ pub fn IKDTree(comptime K: usize) type {
                     if (n.deleted == delete) {
                         const status = if (delete) "delete" else "reinsert";
                         const status_past = if (delete) "deleted" else "inserted";
-                        log(.WARN, name, "Attempting to {s} already {s} node", .{ status, status_past });
+                        ikd_tree.log.warn("Attempting to {s} already {s} node", .{ status, status_past });
                     }
                     n.deleted = delete;
                     return;
@@ -473,7 +472,7 @@ pub fn IKDTree(comptime K: usize) type {
                         recursiveInsert(&n.left, ikd_tree, point, enable_parallel);
                     } else {
                         n.left = ikd_tree.pool.create() catch |err| {
-                            log(.ERROR, name, "Failed to create node at {d}: {s}", .{ point, @errorName(err) });
+                            ikd_tree.log.err("Failed to create node at {d}: {s}", .{ point, @errorName(err) });
                             return;
                         };
                         n.left.?.* = Node{
@@ -490,7 +489,7 @@ pub fn IKDTree(comptime K: usize) type {
                         recursiveInsert(&n.right, ikd_tree, point, enable_parallel);
                     } else {
                         n.right = ikd_tree.pool.create() catch |err| {
-                            log(.ERROR, name, "Failed to create node at {d}: {s}", .{ point, @errorName(err) });
+                            ikd_tree.log.err("Failed to create node at {d}: {s}", .{ point, @errorName(err) });
                             return;
                         };
                         n.right.?.* = Node{
@@ -602,14 +601,14 @@ pub fn IKDTree(comptime K: usize) type {
                         !(ikd_tree.config.enable_parallel and enable_parallel))
                     {
                         rebuildSubtree(node, ikd_tree) catch |err| {
-                            log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
+                            ikd_tree.log.warn("Failed to rebuild subtree: {s}", .{@errorName(err)});
                         };
                     } else {
                         //rebuildSubtreeParallel(node, ikd_tree) catch |err| {
-                        //    log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
+                        //    log.warn("Failed to rebuild subtree: {s}", .{@errorName(err)});
                         //};
                         rebuildSubtree(node, ikd_tree) catch |err| {
-                            log(.WARN, name, "Failed to rebuild subtree: {s}", .{@errorName(err)});
+                            ikd_tree.log.warn("Failed to rebuild subtree: {s}", .{@errorName(err)});
                         };
                     }
                 }
@@ -624,11 +623,12 @@ pub fn IKDTree(comptime K: usize) type {
         operation_queue: OperationQueue,
         last_operation: ?*OperationQueue.Node,
         rwlock: std.Thread.RwLock,
+        log: *Log,
 
-        pub fn init(Vec: []Point, config: Config, alloc: std.mem.Allocator) !Self {
+        pub fn init(Vec: []Point, config: Config, alloc: std.mem.Allocator, log: *Log) !Self {
             var pool = NodePool.init(alloc);
             return .{
-                .root = try Node.buildSubtree(Vec, &pool),
+                .root = try Node.buildSubtree(Vec, &pool, log),
                 .alloc = alloc,
                 .config = config,
                 .pool = pool,
@@ -636,6 +636,7 @@ pub fn IKDTree(comptime K: usize) type {
                 .operation_queue = OperationQueue{},
                 .last_operation = null,
                 .rwlock = std.Thread.RwLock{},
+                .log = log,
             };
         }
         pub fn deinit(self: *Self) void {
@@ -645,13 +646,13 @@ pub fn IKDTree(comptime K: usize) type {
 
         pub fn print(self: *Self) void {
             if (self.root) |root| {
-                log(.DEBUG, name, "Tree Size: {d}", .{root.tree_size});
-                log(.DEBUG, name, "Num Deleted: {d}", .{root.invalid_num});
+                self.log.debug("Tree Size: {d}", .{root.tree_size});
+                self.log.debug("Num Deleted: {d}", .{root.invalid_num});
             } else {
-                log(.DEBUG, name, "NULL Root", .{});
+                self.log.debug("NULL Root", .{});
             }
             Node.printSubtree(self.root, "", false) catch |err| {
-                log(.ERROR, name, "Error printing subtree: {}", .{err});
+                self.log.err("Error printing subtree: {}", .{err});
             };
         }
 
@@ -731,7 +732,7 @@ pub fn IKDTree(comptime K: usize) type {
 
             if (self.suspend_ops) {
                 const node = self.alloc.create(OperationQueue.Node) catch |err| {
-                    log(.ERROR, name, "Failed to create operation queue node: {}", .{err});
+                    self.log.err("Failed to create operation queue node: {}", .{err});
                     return error.OutOfMemory;
                 };
                 node.* = OperationQueue.Node{ .data = op };
@@ -781,7 +782,7 @@ pub fn IKDTree(comptime K: usize) type {
 
         fn doInsert(self: *Self, root: *?*Node, point: Point, enable_parallel: bool) !void {
             if (root.* == null) {
-                root.* = try Node.buildSubtree(@constCast(&[_]Point{point}), &self.pool);
+                root.* = try Node.buildSubtree(@constCast(&[_]Point{point}), &self.pool, self.log);
             } else {
                 const rn = root.*.?;
                 if (Node.findInSubtree(rn, point, self.config.relative_tolrance, true)) {}
@@ -835,7 +836,7 @@ pub fn IKDTree(comptime K: usize) type {
                 points[h] = node.point;
             }
 
-            const hypercube_tree = try Node.buildSubtree(points, &self.pool) orelse return;
+            const hypercube_tree = try Node.buildSubtree(points, &self.pool, self.log) orelse return;
             defer hypercube_tree.recursiveFree(&self.pool);
 
             // Delete all nodes in the hypercube
@@ -934,10 +935,15 @@ pub fn IKDTree(comptime K: usize) type {
 /////////////
 
 test "Build" {
-    @import("logger").logLevelSet(.NONE);
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "Build",
+    });
+    defer log.deinit();
 
     const config = I3DTree.Config{
         .a_bal = 0.75,
@@ -960,7 +966,7 @@ test "Build" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
@@ -979,7 +985,12 @@ test "Build" {
 }
 
 test "SingleThreadedInsert" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedInsert",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1005,11 +1016,11 @@ test "SingleThreadedInsert" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1023,7 +1034,12 @@ test "SingleThreadedInsert" {
 }
 
 test "SingleThreadedInsertMany" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedInsertMany",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1049,7 +1065,7 @@ test "SingleThreadedInsertMany" {
         }
     }
 
-    var ikd = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd.deinit();
 
     try std.testing.expectEqual(0, ikd.count());
@@ -1071,7 +1087,12 @@ test "SingleThreadedInsertMany" {
 }
 
 test "SingleThreadedRemove" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedRemove",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1097,11 +1118,11 @@ test "SingleThreadedRemove" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1126,7 +1147,12 @@ test "SingleThreadedRemove" {
 }
 
 test "SingleThreadedBoxRemove" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedBoxRemove",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1152,11 +1178,11 @@ test "SingleThreadedBoxRemove" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1225,7 +1251,12 @@ test "SingleThreadedBoxRemove" {
 }
 
 test "SingleThreadedReinsert" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedReinsert",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1251,7 +1282,7 @@ test "SingleThreadedReinsert" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
@@ -1267,7 +1298,12 @@ test "SingleThreadedReinsert" {
 }
 
 test "SingleThreadedReinsertBox" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedReinsertBox",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1293,7 +1329,7 @@ test "SingleThreadedReinsertBox" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
@@ -1319,7 +1355,12 @@ test "SingleThreadedReinsertBox" {
 }
 
 test "SingleThreadedDownsample" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "SingleThreadedDownsample",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1345,11 +1386,11 @@ test "SingleThreadedDownsample" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1384,7 +1425,12 @@ test "SingleThreadedDownsample" {
 }
 
 test "MultiThreadedInsert" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedInsert",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1410,11 +1456,11 @@ test "MultiThreadedInsert" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1428,8 +1474,12 @@ test "MultiThreadedInsert" {
 }
 
 test "MultiThreadedInsertMany" {
-    @import("logger").logLevelSet(.NONE);
-
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedInsertMany",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1455,7 +1505,7 @@ test "MultiThreadedInsertMany" {
         }
     }
 
-    var ikd = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd.deinit();
 
     try std.testing.expectEqual(0, ikd.count());
@@ -1477,7 +1527,12 @@ test "MultiThreadedInsertMany" {
 }
 
 test "MultiThreadedRemove" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedRemove",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1503,11 +1558,11 @@ test "MultiThreadedRemove" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1532,7 +1587,12 @@ test "MultiThreadedRemove" {
 }
 
 test "MultiThreadedBoxRemove" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedBoxRemove",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1558,11 +1618,11 @@ test "MultiThreadedBoxRemove" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());
@@ -1631,7 +1691,12 @@ test "MultiThreadedBoxRemove" {
 }
 
 test "MultiThreadedReinsert" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedReinsert",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1657,7 +1722,7 @@ test "MultiThreadedReinsert" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
@@ -1673,7 +1738,12 @@ test "MultiThreadedReinsert" {
 }
 
 test "MultiThreadedReinsertBox" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedReinsertBox",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1699,7 +1769,7 @@ test "MultiThreadedReinsertBox" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
@@ -1725,7 +1795,12 @@ test "MultiThreadedReinsertBox" {
 }
 
 test "MultiThreadedDownsample" {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/IKDTree",
+        .channel = "MultiThreadedDownsample",
+    });
+    defer log.deinit();
     const I3DTree = IKDTree(3);
     const allocator = std.testing.allocator;
     const tol = 0.0001;
@@ -1751,11 +1826,11 @@ test "MultiThreadedDownsample" {
         }
     }
 
-    var ikd = try I3DTree.init(points, config, allocator);
+    var ikd = try I3DTree.init(points, config, allocator, &log);
     defer ikd.deinit();
     allocator.free(points);
 
-    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator);
+    var ikd_empty = try I3DTree.init(&[_][3]f32{}, config, allocator, &log);
     defer ikd_empty.deinit();
 
     try std.testing.expectEqual(125, ikd.count());

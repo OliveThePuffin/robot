@@ -21,11 +21,11 @@ pub fn build(b: *std.Build) void {
     const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
     const module_slam = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/Slam.zig") });
     const module_ocl_helper = b.addModule("ocl_helper", .{ .root_source_file = b.path("src/opencl/cl_helper.zig") });
-    const module_log = b.addModule("logger", .{ .root_source_file = b.path("src/logger.zig") });
+    const module_log = b.addModule("Log", .{ .root_source_file = b.path("src/Log.zig") });
     module_ocl_helper.addImport("opencl", module_cl);
-    module_ocl_helper.addImport("logger", module_log);
+    module_ocl_helper.addImport("Log", module_log);
     module_slam.addImport("ocl_helper", module_ocl_helper);
-    module_slam.addImport("logger", module_log);
+    module_slam.addImport("Log", module_log);
 
     //const lib = b.addStaticLibrary(.{
     //    .name = "robot",
@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
     //    .target = target,
     //    .optimize = optimize,
     //});
-    //lib.root_module.addImport("logger", module_log);
+    //lib.root_module.addImport("Log", module_log);
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("Config", module_config);
     exe.root_module.addImport("Slam", module_slam);
     module_slam.addImport("ocl_helper", module_ocl_helper);
-    exe.root_module.addImport("logger", module_log);
+    exe.root_module.addImport("Log", module_log);
     exe.linkLibC();
     exe.linkSystemLibrary("realsense2");
 
@@ -101,14 +101,14 @@ pub fn build(b: *std.Build) void {
 
     const exe_unit_tests = .{
         b.addTest(.{ .root_source_file = b.path("src/main.zig") }),
-        b.addTest(.{ .root_source_file = b.path("src/logger.zig") }),
+        b.addTest(.{ .root_source_file = b.path("src/Log.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/config/Config.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/slam/Slam.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/slam/KalmanFilter.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/slam/IKDTree.zig") }),
     };
     inline for (exe_unit_tests) |exe_unit_test| {
-        exe_unit_test.root_module.addImport("logger", module_log);
+        exe_unit_test.root_module.addImport("Log", module_log);
         exe_unit_test.linkLibC();
     }
     exe_unit_tests[4].root_module.addImport("ocl_helper", module_ocl_helper);

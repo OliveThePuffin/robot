@@ -1,18 +1,13 @@
+const Dir = @import("std").fs.Dir;
 const Slam = @import("Slam");
-const LogLevel = @import("logger").Level;
+const LogConfig = @import("logger").Config;
 const Config = @This();
 
-log_level: LogLevel,
 slam: Slam.Config,
 
 const opencl_gpu = .{
     .platform_name = "NVIDIA CUDA",
     .device_name = "NVIDIA GeForce RTX 3080",
-};
-
-const opencl_cpu = .{
-    .platform_name = "Clover",
-    .device_name = "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 18.1.8, DRM 3.54, 6.6.44_1)",
 };
 
 const default_ikd_tree = .{
@@ -24,36 +19,47 @@ const default_ikd_tree = .{
 };
 
 const default_slam = .{
-    .dry_run = false,
-    .ikd_tree = default_ikd_tree,
+    .log_config = .{
+        .level = .INFO,
+        .abs_path = null,
+        .channel = "Slam",
+    },
     .kalman_filter = .{
         .opencl = opencl_gpu,
     },
-};
-
-pub const default = Config{
-    .log_level = .INFO,
-    .slam = default_slam,
-};
-
-pub const dry_run = Config{
-    .log_level = .DEBUG,
-    .slam = .{
-        .dry_run = true,
-        .ikd_tree = default_ikd_tree,
-        .kalman_filter = .{
-            .opencl = opencl_gpu,
+    .ikd_tree = default_ikd_tree,
+    .rs_config = .{
+        .dry_run = false,
+        .log_config = .{
+            .level = .INFO,
+            .abs_path = "/tmp/CLAW",
+            .channel = "Realsense",
         },
     },
 };
 
-pub const cpu_dry_run = Config{
-    .log_level = .DEBUG,
+pub const default = Config{
+    .slam = default_slam,
+};
+
+pub const dry_run = Config{
     .slam = .{
-        .dry_run = true,
-        .ikd_tree = default_ikd_tree,
+        .log_config = .{
+            .level = .INFO,
+            .abs_path = "/tmp/CLAW",
+            .channel = "Slam",
+        },
         .kalman_filter = .{
-            .opencl = opencl_cpu,
+            .opencl = opencl_gpu,
+        },
+        .ikd_tree = default_ikd_tree,
+        .rs_config = .{
+            .dry_run = true,
+            .log_config = .{
+                .level = .INFO,
+                .abs_path = "/tmp/CLAW",
+                .channel = "Realsense",
+            },
         },
     },
 };

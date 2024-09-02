@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = @import("logger").log;
+const Log = @import("Log").Log;
 const clh = @import("ocl_helper");
 const cl = clh.cl;
 
@@ -110,19 +110,19 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             buffer_IKHPIKHT: cl.buffer.cl_mem,
             buffer_KR: cl.buffer.cl_mem,
 
-            pub fn init(config: clh.Config, allocator: std.mem.Allocator) !OpenCLData {
-                const platform_id = try clh.choosePlatform(config.platform_name, allocator);
+            pub fn init(config: clh.Config, allocator: std.mem.Allocator, log: *Log) !OpenCLData {
+                const platform_id = try clh.choosePlatform(config.platform_name, allocator, log);
                 const devices = try clh.getDevices(platform_id, allocator);
-                const device_id = try clh.chooseDevice(devices, config.device_name, allocator);
+                const device_id = try clh.chooseDevice(devices, config.device_name, allocator, log);
                 const context = try cl.context.create(null, devices, null, null);
 
                 const queue_state = try cl.command_queue.create(context, device_id, 0);
                 const queue_covariance = try cl.command_queue.create(context, device_id, 0);
-                const program = try clh.compileOpenclSrc(&[_][]const u8{ocl_src}, allocator, context, device_id);
+                const program = try clh.compileOpenclSrc(&[_][]const u8{ocl_src}, allocator, context, device_id, log);
 
                 var kernels: [stage_count]cl.kernel.cl_kernel = undefined;
                 inline for (@typeInfo(Stage).Enum.fields, 0..) |stage, i| {
-                    log(.DEBUG, name, "Creating kernel: {s}", .{stage.name});
+                    log.debug("Creating kernel: {s}", .{stage.name});
                     kernels[i] = try cl.kernel.create(program, stage.name);
                 }
 
@@ -340,9 +340,11 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
         };
         aa: std.heap.ArenaAllocator,
         opencl_data: OpenCLData,
+        log: *Log,
 
         pub fn init(
             config: Config,
+            log: *Log,
             H: ?[measure_dim][state_dim]f32,
             R: ?[measure_dim][measure_dim]f32,
             x: ?[state_dim]f32,
@@ -352,14 +354,15 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             Q: ?[state_dim][state_dim]f32,
         ) !Self {
             var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            log(.INFO, name, "Initializing", .{});
+            log.info("Initializing", .{});
 
             // TODO: add the update equations
-            const opencl_data = try OpenCLData.init(config.opencl, aa.allocator());
+            const opencl_data = try OpenCLData.init(config.opencl, aa.allocator(), log);
 
             var kf = Self{
                 .aa = aa,
                 .opencl_data = opencl_data,
+                .log = log,
             };
 
             const cl_data = &kf.opencl_data;
@@ -409,6 +412,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             P: ?[state_dim][state_dim]f32,
             Q: ?[state_dim][state_dim]f32,
         ) ![state_dim]f32 {
+            const log = self.log;
             const cl_data = &self.opencl_data;
             const queue_state = cl_data.queue_state;
             const queue_covariance = cl_data.queue_covariance;
@@ -434,25 +438,25 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             try cl.buffer.read(queue_covariance, cl_data.buffer_G, true, 0, size_G, &input_G, null, null);
             try cl.buffer.read(queue_covariance, cl_data.buffer_Q, true, 0, size_Q, &input_Q, null, null);
 
-            log(.INFO, name, "Predict Called!", .{});
-            log(.DEBUG, name, "Starting Vars!", .{});
-            log(.DEBUG, name, "x: {d}", .{input_x});
-            log(.DEBUG, name, "u: {d}", .{input_u});
-            log(.DEBUG, name, "P:", .{});
+            log.info("Predict Called!", .{});
+            log.debug("Starting Vars!", .{});
+            log.debug("x: {d}", .{input_x});
+            log.debug("u: {d}", .{input_u});
+            log.debug("P:", .{});
             for (input_P) |p| {
-                log(.DEBUG, name, "{d:>7.2}", .{p});
+                log.debug("{d:>7.2}", .{p});
             }
-            log(.DEBUG, name, "F:", .{});
+            log.debug("F:", .{});
             for (input_F) |f| {
-                log(.DEBUG, name, "{d:>7.2}", .{f});
+                log.debug("{d:>7.2}", .{f});
             }
-            log(.DEBUG, name, "G:", .{});
+            log.debug("G:", .{});
             for (input_G) |g| {
-                log(.DEBUG, name, "{d:>7.2}", .{g});
+                log.debug("{d:>7.2}", .{g});
             }
-            log(.DEBUG, name, "Q:", .{});
+            log.debug("Q:", .{});
             for (input_Q) |q| {
-                log(.DEBUG, name, "{d:>10.8}", .{q});
+                log.debug("{d:>10.8}", .{q});
             }
 
             // run kernels,
@@ -493,11 +497,11 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             try cl.buffer.read(queue_state, cl_data.buffer_x, true, 0, size_x, &new_x, null, null);
             try cl.buffer.read(queue_covariance, cl_data.buffer_P, true, 0, size_P, &new_P, null, null);
 
-            log(.INFO, name, "Prediction Done.", .{});
-            log(.DEBUG, name, "x: {d}", .{new_x});
-            log(.DEBUG, name, "P:", .{});
+            log.info("Prediction Done.", .{});
+            log.debug("x: {d}", .{new_x});
+            log.debug("P:", .{});
             for (new_P) |p| {
-                log(.DEBUG, name, "{d:>7.2}", .{p});
+                log.debug("{d:>7.2}", .{p});
             }
             return new_x;
         }
@@ -509,6 +513,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             H: ?[measure_dim][state_dim]f32,
             R: ?[measure_dim][measure_dim]f32,
         ) ![state_dim]f32 {
+            const log = self.log;
             const cl_data = &self.opencl_data;
             const queue_state = cl_data.queue_state;
             const queue_covariance = cl_data.queue_covariance;
@@ -525,13 +530,13 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             try cl.buffer.read(queue_state, cl_data.buffer_H, true, 0, size_H, &input_H, null, null);
             try cl.buffer.read(queue_state, cl_data.buffer_R, true, 0, size_R, &input_R, null, null);
 
-            log(.INFO, name, "Update Called!", .{});
-            log(.DEBUG, name, "Starting Vars!", .{});
-            log(.DEBUG, name, "z: {d}", .{input_z});
-            log(.DEBUG, name, "H: {d}", .{input_H});
-            log(.DEBUG, name, "R:", .{});
+            log.info("Update Called!", .{});
+            log.debug("Starting Vars!", .{});
+            log.debug("z: {d}", .{input_z});
+            log.debug("H: {d}", .{input_H});
+            log.debug("R:", .{});
             for (input_R) |r| {
-                log(.DEBUG, name, "{d:>7.2}", .{r});
+                log.debug("{d:>7.2}", .{r});
             }
 
             // run kernels,
@@ -649,21 +654,21 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             try cl.buffer.read(queue_covariance, cl_data.buffer_P, true, 0, size_P, &new_P, null, null);
             try cl.buffer.read(queue_covariance, cl_data.buffer_K, true, 0, size_K, &new_K, null, null);
 
-            log(.INFO, name, "Update Done.", .{});
-            log(.DEBUG, name, "x: {d}", .{new_x});
-            log(.DEBUG, name, "P:", .{});
+            log.info("Update Done.", .{});
+            log.debug("x: {d}", .{new_x});
+            log.debug("P:", .{});
             for (new_P) |p| {
-                log(.DEBUG, name, "{d:>7.2}", .{p});
+                log.debug("{d:>7.2}", .{p});
             }
-            log(.DEBUG, name, "K:", .{});
+            log.debug("K:", .{});
             for (new_K) |k| {
-                log(.DEBUG, name, "{d:>5.4}", .{k});
+                log.debug("{d:>5.4}", .{k});
             }
             return new_x;
         }
 
         pub fn deinit(self: *Self) void {
-            log(.INFO, name, "Deinitializing", .{});
+            self.log.info("Deinitializing", .{});
             self.opencl_data.deinit();
 
             self.aa.deinit();
@@ -672,7 +677,11 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
 }
 
 test {
-    @import("logger").logLevelSet(.NONE);
+    var log = try Log.init(.{
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/test/KalmanFilter",
+        .channel = "test",
+    });
     const KF = KalmanFilter(2, 1, 1);
     const config = KF.Config{
         .opencl = .{
@@ -684,6 +693,7 @@ test {
     // Example from "Kalman Filter from the Ground Up, Second Edition" Chapter 9.2
     var kf = try KF.init(
         config,
+        &log,
         [1][2]f32{.{ 1, 0 }}, // H
         [1][1]f32{.{400}}, // R
         null, // x
