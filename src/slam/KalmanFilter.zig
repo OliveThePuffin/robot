@@ -355,7 +355,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             Q: ?[state_dim][state_dim]f32,
         ) !Self {
             var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            log.info("Initializing", .{});
+            log.info("Initializing Kalman Filter", .{});
 
             // TODO: add the update equations
             const opencl_data = try OpenCLData.init(config.opencl, aa.allocator(), log);
@@ -677,7 +677,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
     };
 }
 
-test {
+test "Example" {
     var log = try Log.init(.{
         .level = .DEBUG,
         .abs_path = "/tmp/CLAW/test/KalmanFilter",
@@ -703,6 +703,7 @@ test {
         [2][2]f32{ .{ 500, 0 }, .{ 0, 500 } }, // P
         [2][2]f32{ .{ 9.765625e-6, 7.8125e-3 }, .{ 7.8125e-3, 6.25e-2 } }, // Q
     );
+    defer kf.deinit();
 
     const x = try kf.iterate(
         [1]f32{6.43}, // z
@@ -714,6 +715,7 @@ test {
         null, // Q
     );
 
+    log.info("x_1: {d}", .{x});
     try std.testing.expectApproxEqAbs(x[0][0], 3.67, 0.01);
     try std.testing.expectApproxEqAbs(x[0][1], 0.86, 0.01);
     try std.testing.expectApproxEqAbs(x[1][0], 4.82, 0.01);

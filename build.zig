@@ -27,21 +27,6 @@ pub fn build(b: *std.Build) void {
     module_slam.addImport("ocl_helper", module_ocl_helper);
     module_slam.addImport("Log", module_log);
 
-    //const lib = b.addStaticLibrary(.{
-    //    .name = "robot",
-    //    // In this case the main source file is merely a path, however, in more
-    //    // complicated build scripts, this could be a generated file.
-    //    .root_source_file = b.path("src/root.zig"),
-    //    .target = target,
-    //    .optimize = optimize,
-    //});
-    //lib.root_module.addImport("Log", module_log);
-
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    //b.installArtifact(lib);
-
     const exe = b.addExecutable(.{
         .name = "robot",
         .root_source_file = b.path("src/main.zig"),
@@ -89,17 +74,8 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // Creates a step for unit testing. This only builds the test executable
-    // but does not run it.
-    //const lib_unit_tests = b.addTest(.{
-    //    .root_source_file = b.path("src/root.zig"),
-    //    .target = target,
-    //    .optimize = optimize,
-    //});
-
-    //const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
-
-    const exe_unit_tests = .{
+    // Unit tests
+    const unit_tests = .{
         b.addTest(.{ .root_source_file = b.path("src/main.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/Log.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/config/Config.zig") }),
@@ -107,19 +83,29 @@ pub fn build(b: *std.Build) void {
         b.addTest(.{ .root_source_file = b.path("src/slam/KalmanFilter.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/slam/IKDTree.zig") }),
     };
-    inline for (exe_unit_tests) |exe_unit_test| {
-        exe_unit_test.root_module.addImport("Log", module_log);
-        exe_unit_test.linkLibC();
+    inline for (unit_tests) |unit_test| {
+        unit_test.root_module.addImport("Log", module_log);
+        unit_test.linkLibC();
     }
-    exe_unit_tests[4].root_module.addImport("ocl_helper", module_ocl_helper);
-
-    // Similar to creating the run step earlier, this exposes a `test` step to
-    // the `zig build --help` menu, providing a way for the user to request
-    // running the unit tests.
+    unit_tests[4].root_module.addImport("ocl_helper", module_ocl_helper);
 
     const test_step = b.step("test", "Run unit tests");
-    inline for (exe_unit_tests) |exe_unit_test| {
-        const run_exe_unit_test = b.addRunArtifact(exe_unit_test);
-        test_step.dependOn(&run_exe_unit_test.step);
+    inline for (unit_tests) |unit_test| {
+        const run_unit_test = b.addRunArtifact(unit_test);
+        test_step.dependOn(&run_unit_test.step);
     }
+
+    // Performance tests
+    const ikd_tree_perf = b.addExecutable(.{
+        .name = "perf",
+        .root_source_file = b.path("src/perf_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ikd_tree_perf.root_module.addImport("Log", module_log);
+    b.installArtifact(ikd_tree_perf);
+    const perf_cmd = b.addRunArtifact(ikd_tree_perf);
+    perf_cmd.step.dependOn(b.getInstallStep());
+    const perf_step = b.step("perf", "Run performance tests");
+    perf_step.dependOn(&perf_cmd.step);
 }

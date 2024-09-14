@@ -2,8 +2,6 @@ const std = @import("std");
 const Log = @import("Log").Log;
 
 // Based on https://arxiv.org/pdf/2102.10808
-//
-// TODO: Fix parallel rebuild
 
 pub const IKDTreeError = error{
     OutOfMemory,
@@ -344,63 +342,6 @@ pub fn IKDTree(comptime K: usize) type {
                 } else {
                     node.* = null;
                 }
-                if (old_node.left) |left| recursiveFree(left, &ikd_tree.pool);
-                if (old_node.right) |right| recursiveFree(right, &ikd_tree.pool);
-            }
-
-            // Whenever this function is called, the rwlock should already be locked
-            // rwlock should also be unlocked by the doOperation that called this
-            //
-            // rwlock came locked. It should leave locked
-            fn rebuildSubtreeParallel(node: *?*Node, ikd_tree: *Self) !void {
-                if (node.* == null) return;
-
-                ikd_tree.suspend_ops = true;
-
-                // the rest should be parallel
-                const rebuild_thread = std.Thread.spawn(
-                    .{},
-                    rebuildSubtreeParallelThread,
-                    .{ node, ikd_tree },
-                ) catch |err| {
-                    ikd_tree.log.err("Failed to spawn rebuildSubtreeParallelThread: {}", .{err});
-                    ikd_tree.rwlock.unlock();
-                    try rebuildSubtreeParallelThread(node, ikd_tree);
-                    ikd_tree.rwlock.lock();
-                    return;
-                };
-                rebuild_thread.detach();
-            }
-            // TODO: The error when doing this function is that the calling function returns
-            // and the node pointer goes out of scope.
-            fn rebuildSubtreeParallelThread(node: *?*Node, ikd_tree: *Self) !void {
-                const n = node.*.?;
-                ikd_tree.rwlock.lock();
-                const nodes = try n.flatten(ikd_tree.alloc);
-                defer ikd_tree.alloc.free(nodes);
-                ikd_tree.rwlock.unlock();
-
-                var points: []Point = try ikd_tree.alloc.alloc(Point, nodes.len);
-                defer ikd_tree.alloc.free(points);
-                for (nodes, 0..) |ns, i| {
-                    points[i] = ns.point;
-                }
-                var new_node = try Node.buildSubtree(points, &ikd_tree.pool);
-                errdefer if (new_node) |new| recursiveFree(new, &ikd_tree.pool);
-
-                ikd_tree.rwlock.lock();
-                while (ikd_tree.operation_queue.popFirst()) |op| {
-                    try ikd_tree.doOperationSwitch(&new_node, op.data, false);
-                    ikd_tree.alloc.destroy(op);
-                }
-                const old_node = node.*.?.*;
-                if (new_node) |new| {
-                    n.* = new.*;
-                } else {
-                    node.* = null;
-                }
-                ikd_tree.suspend_ops = false;
-                ikd_tree.rwlock.unlock();
                 if (old_node.left) |left| recursiveFree(left, &ikd_tree.pool);
                 if (old_node.right) |right| recursiveFree(right, &ikd_tree.pool);
             }
