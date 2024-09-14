@@ -56,17 +56,22 @@ pub fn choosePlatform(platform_name_config: []const u8, allocator: std.mem.Alloc
             if (field.type == cl.platform.cl_platform_id) {
                 log.debug("{s} = {}", .{ field.name, @as(*u8, @ptrCast(@field(platform, field.name))).* });
             } else {
-                log.debug("{s} = {s}", .{ field.name, @field(platform, field.name) });
+                log.debug(
+                    "{s} = {s}",
+                    .{ field.name, @as([*:0]u8, @ptrCast(@field(platform, field.name))) },
+                );
             }
         }
-        if (std.mem.eql(u8, platform_name_config, platform.name[0 .. platform.name.len - 1])) {
+        const platform_name_sentinel = @as([*:0]u8, @ptrCast(platform.name.ptr));
+        if (std.mem.eql(u8, platform_name_config, std.mem.span(platform_name_sentinel))) {
             chosen = i;
         }
         log.debug("", .{});
     }
 
     if (chosen) |c| {
-        log.info("Platform Chosen: {s}", .{platforms[c].name});
+        const platform_name_sentinel = @as([*:0]u8, @ptrCast(platforms[c].name.ptr));
+        log.info("Platform Chosen: {s}", .{platform_name_sentinel});
         return platforms[c].id;
     } else {
         log.err("Platform {s} not found", .{platform_name_config});
@@ -83,9 +88,6 @@ pub fn getDevices(platform_id: cl.platform.cl_platform_id, allocator: std.mem.Al
 }
 
 pub fn chooseDevice(devices: []cl.device.cl_device_id, device_name_config: []const u8, allocator: std.mem.Allocator, log: *Log) !cl.device.cl_device_id {
-    var chosen_device_id: cl.device.cl_device_id = null;
-    var chosen_device_name: ?[]u8 = null;
-
     for (devices) |device| {
         log.debug("Device ID: {}", .{@as(*u8, @ptrCast(device.?)).*});
 
@@ -100,19 +102,15 @@ pub fn chooseDevice(devices: []cl.device.cl_device_id, device_name_config: []con
         const device_name: []u8 = try allocator.alloc(u8, device_name_size);
         defer allocator.free(device_name);
         try cl.device.get_info(device, cl.device.enums.device_info.name, device_name_size, @ptrCast(device_name), null);
-        log.debug("Device Name: {s}", .{device_name});
+        const device_name_sentinel = @as([*:0]u8, @ptrCast(device_name.ptr));
+        log.debug("Device Name: {s}", .{device_name_sentinel});
 
-        if (std.mem.eql(u8, device_name_config, device_name[0 .. device_name.len - 1])) {
-            chosen_device_id = device;
-            chosen_device_name = device_name;
+        if (std.mem.eql(u8, device_name_config, std.mem.span(device_name_sentinel))) {
+            log.info("Device Chosen: {s}", .{device_name_sentinel});
+            return device;
         }
     }
 
-    if (chosen_device_id) |c| {
-        log.info("Device Chosen: {s}", .{chosen_device_name.?});
-        return c;
-    } else {
-        log.err("Platform {s} not found", .{device_name_config});
-        return OpenCLError.DeviceNotFound;
-    }
+    log.err("Platform {s} not found", .{device_name_config});
+    return OpenCLError.DeviceNotFound;
 }

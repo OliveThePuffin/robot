@@ -49,6 +49,7 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
     return struct {
         const Self = @This();
         const name = "KalmanFilter";
+
         pub const Config = struct {
             opencl: clh.Config,
         };

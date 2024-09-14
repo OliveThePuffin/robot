@@ -14,7 +14,7 @@ pub fn main() !void {
 
     // Start modules
     Slam.start();
-    std.time.sleep(5 * std.time.ns_per_s);
+    //std.time.sleep(5 * std.time.ns_per_s);
     Slam.stop();
 }
 

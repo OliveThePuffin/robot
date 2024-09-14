@@ -43,8 +43,8 @@ pub const default = Config{
 pub const dry_run = Config{
     .slam = .{
         .log_config = .{
-            .level = .INFO,
-            .abs_path = "/tmp/CLAW",
+            .level = .DEBUG,
+            .abs_path = null,
             .channel = "Slam",
         },
         .kalman_filter = .{
@@ -54,8 +54,8 @@ pub const dry_run = Config{
         .rs_config = .{
             .dry_run = true,
             .log_config = .{
-                .level = .INFO,
-                .abs_path = "/tmp/CLAW",
+                .level = .DEBUG,
+                .abs_path = null,
                 .channel = "Realsense",
             },
         },
