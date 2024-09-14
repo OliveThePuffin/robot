@@ -13,8 +13,6 @@ const opencl_gpu = .{
 const default_ikd_tree = .{
     .a_bal = 0.75,
     .a_del = 0.5,
-    .enable_parallel = false,
-    .max_size_single_thread_rebuild = 3000,
     .relative_tolrance = 0.00001,
 };
 
