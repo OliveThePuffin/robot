@@ -38,6 +38,8 @@ pub const Log = struct {
     }
 
     pub fn deinit(self: *Log) void {
+        //self.log_mutex.lock();
+        //defer self.log_mutex.unlock();
         if (self.config.abs_path) |_| {
             self.out_file.close();
             // self.err_file.close(); // Both files right now are the same

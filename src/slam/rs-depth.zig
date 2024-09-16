@@ -17,7 +17,7 @@ pub const Config = struct {
     stream_index: usize = 0,
     stream: lrs2.enum_rs2_stream = lrs2.RS2_STREAM_DEPTH,
     format: lrs2.enum_rs2_format = lrs2.RS2_FORMAT_Z16,
-    log_config: LogConfig,
+    log: LogConfig,
 };
 
 pub const RealsenseDepth = struct {
@@ -96,15 +96,15 @@ pub const RealsenseDepth = struct {
     }
 
     pub fn init(config: Config) !RealsenseDepth {
-        return .{ .config = config, .log = try Log.init(config.log_config) };
+        return .{ .config = config, .log = try Log.init(config.log) };
     }
 
     pub fn deinit(self: *RealsenseDepth) void {
-        self.stop_loop();
+        self.stop();
         self.log.deinit();
     }
 
-    pub fn start_loop(self: *RealsenseDepth) void {
+    pub fn start(self: *RealsenseDepth) void {
         self.loop_mutex.lock();
         defer self.loop_mutex.unlock();
 
@@ -112,11 +112,11 @@ pub const RealsenseDepth = struct {
             self.log.warn("Loop already running...", .{});
         } else {
             self.loop_continue = true;
-            self.loop_thread = std.Thread.spawn(.{}, depth_loop, .{self}) catch unreachable;
+            self.loop_thread = std.Thread.spawn(.{}, loop, .{self}) catch unreachable;
         }
     }
 
-    pub fn stop_loop(self: *RealsenseDepth) void {
+    pub fn stop(self: *RealsenseDepth) void {
         self.loop_mutex.lock();
         defer self.loop_mutex.unlock();
 
@@ -127,7 +127,7 @@ pub const RealsenseDepth = struct {
         }
     }
 
-    fn depth_loop(self: *RealsenseDepth) RealsenseError!void {
+    fn loop(self: *RealsenseDepth) RealsenseError!void {
         if (self.config.dry_run) {
             self.log.warn("Dry run mode enabled. Skipping Depth Loop", .{});
             return;

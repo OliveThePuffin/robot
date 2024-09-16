@@ -18,14 +18,19 @@ pub fn build(b: *std.Build) void {
     // Modules
     const module_cl = b.dependency("zig-opencl", .{ .target = target, .optimize = optimize }).module("opencl");
     const module_web = b.dependency("zap", .{ .target = target, .optimize = optimize, .openssl = false }).module("zap");
-    const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
-    const module_slam = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/Slam.zig") });
     const module_ocl_helper = b.addModule("ocl_helper", .{ .root_source_file = b.path("src/opencl/cl_helper.zig") });
+
+    const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
+    const module_fast_lio = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/FastLIO.zig") });
+
     const module_log = b.addModule("Log", .{ .root_source_file = b.path("src/Log.zig") });
+    const module_unit = b.addModule("Unit", .{ .root_source_file = b.path("src/Unit.zig") });
+
     module_ocl_helper.addImport("opencl", module_cl);
     module_ocl_helper.addImport("Log", module_log);
-    module_slam.addImport("ocl_helper", module_ocl_helper);
-    module_slam.addImport("Log", module_log);
+    module_unit.addImport("Log", module_log);
+    module_fast_lio.addImport("Log", module_log);
+    module_fast_lio.addImport("Unit", module_unit);
 
     const exe = b.addExecutable(.{
         .name = "robot",
@@ -35,8 +40,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("zap", module_web);
     exe.root_module.addImport("Config", module_config);
-    exe.root_module.addImport("Slam", module_slam);
-    module_slam.addImport("ocl_helper", module_ocl_helper);
+    exe.root_module.addImport("Slam", module_fast_lio);
+    module_fast_lio.addImport("ocl_helper", module_ocl_helper);
     exe.root_module.addImport("Log", module_log);
     exe.linkLibC();
     exe.linkSystemLibrary("realsense2");
@@ -75,19 +80,21 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Unit tests
+    const kf_test = b.addTest(.{
+        .root_source_file = b.path("src/slam/KalmanFilter.zig"),
+    });
     const unit_tests = .{
         b.addTest(.{ .root_source_file = b.path("src/main.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/Log.zig") }),
         b.addTest(.{ .root_source_file = b.path("src/config/Config.zig") }),
-        b.addTest(.{ .root_source_file = b.path("src/slam/Slam.zig") }),
-        b.addTest(.{ .root_source_file = b.path("src/slam/KalmanFilter.zig") }),
+        kf_test,
         b.addTest(.{ .root_source_file = b.path("src/slam/IKDTree.zig") }),
     };
     inline for (unit_tests) |unit_test| {
         unit_test.root_module.addImport("Log", module_log);
         unit_test.linkLibC();
     }
-    unit_tests[4].root_module.addImport("ocl_helper", module_ocl_helper);
+    kf_test.root_module.addImport("ocl_helper", module_ocl_helper);
 
     const test_step = b.step("test", "Run unit tests");
     inline for (unit_tests) |unit_test| {

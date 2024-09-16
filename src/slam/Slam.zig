@@ -15,7 +15,7 @@ var kf: KalmanFilter = undefined;
 var rs_depth: RSDepth = undefined;
 
 pub const Config = struct {
-    log_config: LogConfig,
+    log: LogConfig,
     kalman_filter: KalmanFilter.Config,
     ikd_tree: I3DTree.Config,
     rs_config: RSConfig,
@@ -26,16 +26,16 @@ pub fn start() void {
     // Get IMU input (100-250Hz)
     // Get Lidar input (100k-500kHz)
     log.info("Starting", .{});
-    rs_depth.start_loop();
+    rs_depth.start();
 }
 
 pub fn stop() void {
     log.info("Stopping", .{});
-    rs_depth.stop_loop();
+    rs_depth.stop();
 }
 
 pub fn init(config: Config) !void {
-    log = try Log.init(config.log_config);
+    log = try Log.init(config.log);
     log.info("Initializing Slam", .{});
 
     rs_depth = try RSDepth.init(config.rs_config);

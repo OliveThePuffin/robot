@@ -1,6 +1,5 @@
 const Config = @import("config/Config.zig");
-const Slam = @import("Slam");
-const logger = @import("logger");
+const Slam = @import("Slam").FastLIO;
 const std = @import("std");
 
 pub fn main() !void {
@@ -9,12 +8,12 @@ pub fn main() !void {
     const config = Config.dry_run;
 
     // Initialize modules
-    try Slam.init(config.slam);
-    defer Slam.deinit();
+    var slam = try Slam.init(config.slam);
+    defer slam.deinit();
 
     // Start modules
-    Slam.start();
-    Slam.stop();
+    //slam.start();
+    //slam.stop();
 }
 
 test {}

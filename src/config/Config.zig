@@ -3,7 +3,7 @@ const Slam = @import("Slam");
 const LogConfig = @import("logger").Config;
 const Config = @This();
 
-slam: Slam.Config,
+slam: Slam.FastLIO.Config,
 
 const opencl_gpu = .{
     .platform_name = "NVIDIA CUDA",
@@ -17,7 +17,7 @@ const default_ikd_tree = .{
 };
 
 const default_slam = .{
-    .log_config = .{
+    .log = .{
         .level = .INFO,
         .abs_path = null,
         .channel = "Slam",
@@ -28,12 +28,13 @@ const default_slam = .{
     .ikd_tree = default_ikd_tree,
     .rs_config = .{
         .dry_run = false,
-        .log_config = .{
+        .log = .{
             .level = .INFO,
             .abs_path = "/tmp/CLAW",
             .channel = "Realsense",
         },
     },
+    .frequency = 0,
 };
 
 pub const default = Config{
@@ -42,7 +43,7 @@ pub const default = Config{
 
 pub const dry_run = Config{
     .slam = .{
-        .log_config = .{
+        .log = .{
             .level = .DEBUG,
             .abs_path = null,
             .channel = "Slam",
@@ -53,11 +54,12 @@ pub const dry_run = Config{
         .ikd_tree = default_ikd_tree,
         .rs_config = .{
             .dry_run = true,
-            .log_config = .{
+            .log = .{
                 .level = .DEBUG,
                 .abs_path = null,
                 .channel = "Realsense",
             },
         },
+        .frequency = 0,
     },
 };
