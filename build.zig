@@ -17,20 +17,24 @@ pub fn build(b: *std.Build) void {
 
     // Modules
     const module_cl = b.dependency("zig-opencl", .{ .target = target, .optimize = optimize }).module("opencl");
-    const module_web = b.dependency("zap", .{ .target = target, .optimize = optimize, .openssl = false }).module("zap");
     const module_ocl_helper = b.addModule("ocl_helper", .{ .root_source_file = b.path("src/opencl/cl_helper.zig") });
 
-    const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
-    const module_fast_lio = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/FastLIO.zig") });
+    const module_web = b.dependency("zap", .{ .target = target, .optimize = optimize, .openssl = false }).module("zap");
+
+    const module_slam = b.addModule("Slam", .{ .root_source_file = b.path("src/slam/FastLIO.zig") });
 
     const module_log = b.addModule("Log", .{ .root_source_file = b.path("src/Log.zig") });
     const module_unit = b.addModule("Unit", .{ .root_source_file = b.path("src/Unit.zig") });
 
+    const module_config = b.addModule("config", .{ .root_source_file = b.path("src/config/Config.zig") });
+
+    // Module deps
     module_ocl_helper.addImport("opencl", module_cl);
     module_ocl_helper.addImport("Log", module_log);
     module_unit.addImport("Log", module_log);
-    module_fast_lio.addImport("Log", module_log);
-    module_fast_lio.addImport("Unit", module_unit);
+    module_slam.addImport("Log", module_log);
+    module_slam.addImport("Unit", module_unit);
+    module_config.addImport("Slam", module_slam);
 
     const exe = b.addExecutable(.{
         .name = "robot",
@@ -40,8 +44,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("zap", module_web);
     exe.root_module.addImport("Config", module_config);
-    exe.root_module.addImport("Slam", module_fast_lio);
-    module_fast_lio.addImport("ocl_helper", module_ocl_helper);
+    exe.root_module.addImport("Slam", module_slam);
+    module_slam.addImport("ocl_helper", module_ocl_helper);
     exe.root_module.addImport("Log", module_log);
     exe.linkLibC();
     exe.linkSystemLibrary("realsense2");

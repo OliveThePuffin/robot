@@ -18,23 +18,23 @@ const default_ikd_tree = .{
 
 const default_slam = .{
     .log = .{
-        .level = .INFO,
-        .abs_path = null,
+        .level = .DEBUG,
+        .abs_path = "/tmp/CLAW/run/Slam",
         .channel = "Slam",
+    },
+    .imu = .{
+        .log = .{
+            .level = .DEBUG,
+            .abs_path = "/tmp/CLAW/run/Slam",
+            .channel = "IMU Realsense",
+        },
+        .frequency = 100,
     },
     .kalman_filter = .{
         .opencl = opencl_gpu,
     },
     .ikd_tree = default_ikd_tree,
-    .rs_config = .{
-        .dry_run = false,
-        .log = .{
-            .level = .INFO,
-            .abs_path = "/tmp/CLAW",
-            .channel = "Realsense",
-        },
-    },
-    .frequency = 0,
+    .frequency = 2,
 };
 
 pub const default = Config{
@@ -45,7 +45,7 @@ pub const dry_run = Config{
     .slam = .{
         .log = .{
             .level = .DEBUG,
-            .abs_path = null,
+            .abs_path = "/tmp/CLAW/run/Slam",
             .channel = "Slam",
         },
         .kalman_filter = .{
@@ -56,7 +56,7 @@ pub const dry_run = Config{
             .dry_run = true,
             .log = .{
                 .level = .DEBUG,
-                .abs_path = null,
+                .abs_path = "/tmp/CLAW/run/Slam",
                 .channel = "Realsense",
             },
         },

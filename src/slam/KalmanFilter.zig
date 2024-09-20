@@ -357,7 +357,6 @@ pub fn KalmanFilter(comptime state_dim: u32, comptime measure_dim: u32, comptime
             var aa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             log.info("Initializing Kalman Filter", .{});
 
-            // TODO: add the update equations
             const opencl_data = try OpenCLData.init(config.opencl, aa.allocator(), log);
 
             var kf = Self{
