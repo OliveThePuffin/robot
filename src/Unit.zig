@@ -12,8 +12,8 @@ pub const Unit = struct {
 
     frequency: f64, // if invalid (<= 0) will run as fast as possible
     ctx: *anyopaque,
-    fn_start: *const fn (ctx: *anyopaque) void,
-    fn_stop: *const fn (ctx: *anyopaque) void,
+    fn_start: ?*const fn (ctx: *anyopaque) void,
+    fn_stop: ?*const fn (ctx: *anyopaque) void,
     fn_deinit: *const fn (ctx: *anyopaque) void,
     fn_update: *const fn (ctx: *anyopaque) anyerror!void,
 
@@ -31,7 +31,9 @@ pub const Unit = struct {
         if (self.loop_thread) |_| {
             self.log.warn("Loop already running...", .{});
         } else {
-            self.fn_start(self.ctx);
+            if (self.fn_start) |fn_start| {
+                fn_start(self.ctx);
+            }
             self.loop_continue = true;
             self.loop_thread = std.Thread.spawn(.{}, loop, .{self}) catch unreachable;
         }
@@ -41,7 +43,9 @@ pub const Unit = struct {
         defer self.loop_mutex.unlock();
 
         if (self.loop_thread) |*thread| {
-            self.fn_stop(self.ctx);
+            if (self.fn_stop) |fn_stop| {
+                fn_stop(self.ctx);
+            }
             self.loop_continue = false;
             thread.join();
             self.loop_thread = null;
